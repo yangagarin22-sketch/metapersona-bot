@@ -6,8 +6,7 @@ import sqlite3
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-import sys
-sys.modules['imghdr'] = type(sys)('imghdr')  # Фикс для отсутствующей библиотеки
+
 # Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -146,7 +145,7 @@ def save_message(user_id, role, content):
     ''', (user_id,))
     
     cursor.execute('''
-        INSERT INTO conversations (user_id, role, content) 
+        INSERT INTO conversations (user_user_id, role, content) 
         VALUES (?, ?, ?)
     ''', (user_id, role, content))
     
@@ -208,7 +207,7 @@ async def get_deepseek_response(user_id, user_message, is_interview=False):
 # Команды
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-user_name = update.effective_user.first_name
+    user_name = update.effective_user.first_name
     
     # Сбрасываем состояние интервью для пользователя
     user_interviews[user_id] = {
@@ -229,12 +228,12 @@ user_name = update.effective_user.first_name
 {INTERVIEW_QUESTIONS[0]}
     """
     
-    update.message.reply_text(welcome_text)
+    await update.message.reply_text(welcome_text)
     print(f"✅ /start от пользователя {user_id}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-user_message = update.message.text
+    user_message = update.message.text
     
     print(f"📨 Сообщение от {user_id}: {user_message}")
     
@@ -254,7 +253,7 @@ user_message = update.message.text
             if interview_data['stage'] < len(INTERVIEW_QUESTIONS):
                 # Задаем следующий вопрос
                 next_question = INTERVIEW_QUESTIONS[interview_data['stage']]
-                update.message.reply_text(next_question)
+                await update.message.reply_text(next_question)
                 return
             else:
                 # Интервью завершено
@@ -298,36 +297,35 @@ user_message = update.message.text
 
 Или просто напишите вашу задачу — я предложу подходящий режим.
                 """
-                update.message.reply_text(completion_text)
+                await update.message.reply_text(completion_text)
                 del user_interviews[user_id]
                 return
     
     # Обычная обработка сообщений
-    import asyncio
-    bot_response = asyncio.run(get_deepseek_response(user_id, user_message))
+    bot_response = await get_deepseek_response(user_id, user_message)
     
     # Сохраняем ответ бота
     save_message(user_id, 'assistant', bot_response)
     
-    update.message.reply_text(bot_response)
+    await update.message.reply_text(bot_response)
 
 # Команды режимов мышления
 async def awareness_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    update.message.reply_text(
+    await update.message.reply_text(
         "🧘 **Режим Осознанности**\n\n"
         "Давайте исследуем ваши мысли и чувства. Что вы хотите понять глубже?\n\n"
         "Задавайте вопросы о смыслах, ценностях, самоощущении - я помогу найти ясность."
     )
 
 async def strategy_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    update.message.reply_text(
+    await update.message.reply_text(
         "🧭 **Режим Стратегии**\n\n"
         "Давайте построим план. Какая цель или задача вас сейчас волнует?\n\n"
         "Опишите ситуацию - вместе найдем оптимальный путь и расставим приоритеты."
     )
 
 async def creative_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    update.message.reply_text(
+    await update.message.reply_text(
         "🎨 **Режим Креативности**\n\n"
         "Давайте найдем неожиданные решения. Что хотите создать или изменить?\n\n"
         "Расскажите о вызове - исследуем альтернативные подходы и свежие идеи."
@@ -358,6 +356,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-
-
