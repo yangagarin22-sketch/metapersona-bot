@@ -1,3 +1,6 @@
+import sys
+sys.modules['imghdr'] = type(sys)('imghdr')  # Фикс для отсутствующей библиотеки
+
 import os
 import logging
 import aiohttp
@@ -360,4 +363,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
