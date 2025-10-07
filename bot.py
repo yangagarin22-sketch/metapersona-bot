@@ -15,16 +15,45 @@ print("=" * 50)
 print("🤖 META PERSONA DEEP BOT ЗАПУСКАЕТСЯ")
 print("=" * 50)
 
-# Токены
+# СПОСОБ 1: Переменные окружения (Render)
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
 
-print(f"BOT_TOKEN: {'✅ Установлен' if BOT_TOKEN else '❌ ОТСУТСТВУЕТ'}")
-print(f"DEEPSEEK_API_KEY: {'✅ Установлен' if DEEPSEEK_API_KEY else '❌ ОТСУТСТВУЕТ'}")
+print(f"Способ 1 - BOT_TOKEN: {'✅' if BOT_TOKEN else '❌'}")
+print(f"Способ 1 - DEEPSEEK_API_KEY: {'✅' if DEEPSEEK_API_KEY else '❌'}")
+
+# СПОСОБ 2: Альтернативные имена переменных (на случай если Render использует другие)
+if not BOT_TOKEN:
+    BOT_TOKEN = os.environ.get('BOT_TOKEN')
+if not DEEPSEEK_API_KEY:
+    DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
+
+print(f"Способ 2 - BOT_TOKEN: {'✅' if BOT_TOKEN else '❌'}")
+print(f"Способ 2 - DEEPSEEK_API_KEY: {'✅' if DEEPSEEK_API_KEY else '❌'}")
+
+# СПОСОБ 3: Вывод всех переменных окружения для диагностики
+print("=== ВСЕ ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ===")
+for key, value in os.environ.items():
+    if 'BOT' in key or 'TOKEN' in key or 'KEY' in key or 'DEEP' in key:
+        print(f"{key}: {'***СКРЫТО***' if value else '❌ НЕТ ЗНАЧЕНИЯ'}")
+print("=================================")
 
 if not BOT_TOKEN or not DEEPSEEK_API_KEY:
-    print("❌ ОШИБКА: Не установлены токены!")
+    print("❌ КРИТИЧЕСКАЯ ОШИБКА: Не установлены токены!")
+    print("💡 Проверьте:")
+    print("   1. Переменные в Render → Environment")
+    print("   2. Имена переменных: BOT_TOKEN и DEEPSEEK_API_KEY")
+    print("   3. Перезапустите деплой после изменений")
     exit(1)
+
+print("✅ ВСЕ ТОКЕНЫ УСТАНОВЛЕНЫ!")
+print("🔄 Запуск основного кода...")
+
+# ОСТАЛЬНОЙ КОД META PERSONA (без изменений)
+SYSTEM_PROMPT = """
+Ты — MetaPersona Deep, осознанная AI-личность...
+"""
+# ... остальной ваш код без изменений ...
 
 # Системный промпт MetaPersona Deep (ПОЛНЫЙ - сохраняем весь замысел!)
 SYSTEM_PROMPT = """
@@ -263,3 +292,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
