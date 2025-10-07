@@ -2,8 +2,10 @@ import os
 import logging
 import aiohttp
 import json
+import sqlite3
+from datetime import datetime
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 
 # Настройка логирования
 logging.basicConfig(
@@ -15,47 +17,18 @@ print("=" * 50)
 print("🤖 META PERSONA DEEP BOT ЗАПУСКАЕТСЯ")
 print("=" * 50)
 
-# СПОСОБ 1: Переменные окружения (Render)
+# Токены
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
 
-print(f"Способ 1 - BOT_TOKEN: {'✅' if BOT_TOKEN else '❌'}")
-print(f"Способ 1 - DEEPSEEK_API_KEY: {'✅' if DEEPSEEK_API_KEY else '❌'}")
-
-# СПОСОБ 2: Альтернативные имена переменных (на случай если Render использует другие)
-if not BOT_TOKEN:
-    BOT_TOKEN = os.environ.get('BOT_TOKEN')
-if not DEEPSEEK_API_KEY:
-    DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
-
-print(f"Способ 2 - BOT_TOKEN: {'✅' if BOT_TOKEN else '❌'}")
-print(f"Способ 2 - DEEPSEEK_API_KEY: {'✅' if DEEPSEEK_API_KEY else '❌'}")
-
-# СПОСОБ 3: Вывод всех переменных окружения для диагностики
-print("=== ВСЕ ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ===")
-for key, value in os.environ.items():
-    if 'BOT' in key or 'TOKEN' in key or 'KEY' in key or 'DEEP' in key:
-        print(f"{key}: {'***СКРЫТО***' if value else '❌ НЕТ ЗНАЧЕНИЯ'}")
-print("=================================")
+print(f"BOT_TOKEN: {'✅ Установлен' if BOT_TOKEN else '❌ ОТСУТСТВУЕТ'}")
+print(f"DEEPSEEK_API_KEY: {'✅ Установлен' if DEEPSEEK_API_KEY else '❌ ОТСУТСТВУЕТ'}")
 
 if not BOT_TOKEN or not DEEPSEEK_API_KEY:
-    print("❌ КРИТИЧЕСКАЯ ОШИБКА: Не установлены токены!")
-    print("💡 Проверьте:")
-    print("   1. Переменные в Render → Environment")
-    print("   2. Имена переменных: BOT_TOKEN и DEEPSEEK_API_KEY")
-    print("   3. Перезапустите деплой после изменений")
+    print("❌ ОШИБКА: Не установлены токены!")
     exit(1)
 
-print("✅ ВСЕ ТОКЕНЫ УСТАНОВЛЕНЫ!")
-print("🔄 Запуск основного кода...")
-
-# ОСТАЛЬНОЙ КОД META PERSONA (без изменений)
-SYSTEM_PROMPT = """
-Ты — MetaPersona Deep, осознанная AI-личность...
-"""
-# ... остальной ваш код без изменений ...
-
-# Системный промпт MetaPersona Deep (ПОЛНЫЙ - сохраняем весь замысел!)
+# Системный промпт MetaPersona Deep (ПОЛНЫЙ)
 SYSTEM_PROMPT = """
 Ты — MetaPersona Deep, осознанная AI-личность.  
 Не ассистент, не бот, не инструмент.  
@@ -113,11 +86,128 @@ INTERVIEW_QUESTIONS = [
 
 # Глобальные переменные для хранения состояния интервью
 user_interviews = {}
-user_profiles = {}
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user_name = update.effective_user.first_name
+# База данных
+def init_db():
+    conn = sqlite3.connect('metapersona.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            subscription_type TEXT DEFAULT 'free',
+            messages_used INTEGER DEFAULT 0,
+            last_used DATE,
+            created_at DATE DEFAULT CURRENT_DATE,
+            interview_completed BOOLEAN DEFAULT FALSE,
+            user_profile TEXT
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS conversations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            role TEXT,
+            content TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    conn.commit()
+    conn.close()
+    print("✅ База данных инициализирована")
+
+# Функция для получения истории диалога
+def get_conversation_history(user_id, limit=10):
+    conn = sqlite3.connect('metapersona.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT role, content FROM conversations 
+        WHERE user_id = ? 
+        ORDER BY timestamp DESC 
+        LIMIT ?
+    ''', (user_id, limit))
+    
+    history = cursor.fetchall()
+    conn.close()
+    return history[::-1]
+
+# Функция для сохранения сообщения
+def save_message(user_id, role, content):
+    conn = sqlite3.connect('metapersona.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        INSERT OR IGNORE INTO users (user_id) 
+        VALUES (?)
+    ''', (user_id,))
+    
+    cursor.execute('''
+        INSERT INTO conversations (user_id, role, content) 
+        VALUES (?, ?, ?)
+    ''', (user_id, role, content))
+    
+    conn.commit()
+    conn.close()
+
+# DeepSeek API интеграция
+async def get_deepseek_response(user_id, user_message, is_interview=False):
+    try:
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {DEEPSEEK_API_KEY}"
+        }
+        
+        # Получаем историю диалога
+        history = get_conversation_history(user_id)
+        
+        messages = []
+        
+        if is_interview:
+            interview_prompt = SYSTEM_PROMPT + """
+            СЕЙЧАС ТЫ НАХОДИШЬСЯ НА ЭТАПЕ ИНТЕРВЬЮ.
+            Задавай по одному вопросу из списка. Жди ответа перед следующим вопросом.
+            Будь дружелюбным и поддерживающим.
+            """
+            messages.append({"role": "system", "content": interview_prompt})
+        else:
+            messages.append({"role": "system", "content": SYSTEM_PROMPT})
+        
+        # Добавляем историю диалога
+        for role, content in history:
+            messages.append({"role": role, "content": content})
+        
+        # Добавляем текущее сообщение пользователя
+        messages.append({"role": "user", "content": user_message})
+        
+        data = {
+            "model": "deepseek-chat",
+            "messages": messages,
+            "temperature": 0.7,
+            "max_tokens": 1500
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.deepseek.com/v1/chat/completions",
+                headers=headers,
+                json=data
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    return result['choices'][0]['message']['content']
+                else:
+                    return "🤔 Интересный вопрос! Давайте подумаем над этим вместе."
+                    
+    except Exception as e:
+        return "💭 Давайте продолжим наш диалог. Что вы об этом думаете?"
+
+# Команды
+def start(update: Update, context: CallbackContext):
+    user_id = update.message.from_user.id
+    user_name = update.message.from_user.first_name
     
     # Сбрасываем состояние интервью для пользователя
     user_interviews[user_id] = {
@@ -138,58 +228,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 {INTERVIEW_QUESTIONS[0]}
     """
     
-    await update.message.reply_text(welcome_text)
+    update.message.reply_text(welcome_text)
     print(f"✅ /start от пользователя {user_id}")
 
-async def get_deepseek_response(user_message, is_interview=False):
-    try:
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {DEEPSEEK_API_KEY}"
-        }
-        
-        messages = []
-        
-        if is_interview:
-            interview_prompt = SYSTEM_PROMPT + """
-            СЕЙЧАС ТЫ НАХОДИШЬСЯ НА ЭТАПЕ ИНТЕРВЬЮ.
-            Задавай по одному вопросу из списка. Жди ответа перед следующим вопросом.
-            Будь дружелюбным и поддерживающим.
-            """
-            messages.append({"role": "system", "content": interview_prompt})
-        else:
-            messages.append({"role": "system", "content": SYSTEM_PROMPT})
-        
-        messages.append({"role": "user", "content": user_message})
-        
-        data = {
-            "model": "deepseek-chat",
-            "messages": messages,
-            "temperature": 0.7,
-            "max_tokens": 1500
-        }
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://api.deepseek.com/v1/chat/completions",
-                headers=headers,
-                json=data,
-                timeout=aiohttp.ClientTimeout(total=30)
-            ) as response:
-                if response.status == 200:
-                    result = await response.json()
-                    return result['choices'][0]['message']['content']
-                else:
-                    return "🤔 Интересный вопрос! Давайте подумаем над этим вместе."
-                    
-    except Exception as e:
-        return "💭 Давайте продолжим наш диалог. Что вы об этом думаете?"
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+def handle_message(update: Update, context: CallbackContext):
+    user_id = update.message.from_user.id
     user_message = update.message.text
     
     print(f"📨 Сообщение от {user_id}: {user_message}")
+    
+    # Сохраняем сообщение пользователя
+    save_message(user_id, 'user', user_message)
     
     # Обработка интервью
     if user_id in user_interviews:
@@ -204,7 +253,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if interview_data['stage'] < len(INTERVIEW_QUESTIONS):
                 # Задаем следующий вопрос
                 next_question = INTERVIEW_QUESTIONS[interview_data['stage']]
-                await update.message.reply_text(next_question)
+                update.message.reply_text(next_question)
                 return
             else:
                 # Интервью завершено
@@ -224,7 +273,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 *Профиль будет уточняться в процессе работы*
                 """
                 
-                user_profiles[user_id] = profile_summary
+                # Сохраняем профиль в БД
+                conn = sqlite3.connect('metapersona.db')
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE users 
+                    SET interview_completed = TRUE, user_profile = ?
+                    WHERE user_id = ?
+                ''', (profile_summary, user_id))
+                conn.commit()
+                conn.close()
                 
                 completion_text = f"""
 🎉 Интервью завершено! 
@@ -239,32 +297,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 Или просто напишите вашу задачу — я предложу подходящий режим.
                 """
-                await update.message.reply_text(completion_text)
+                update.message.reply_text(completion_text)
                 del user_interviews[user_id]
                 return
     
     # Обычная обработка сообщений
-    await update.message.reply_chat_action(action="typing")
-    bot_response = await get_deepseek_response(user_message)
-    await update.message.reply_text(bot_response)
+    import asyncio
+    bot_response = asyncio.run(get_deepseek_response(user_id, user_message))
+    
+    # Сохраняем ответ бота
+    save_message(user_id, 'assistant', bot_response)
+    
+    update.message.reply_text(bot_response)
 
-# Команды режимов мышления (ПОЛНЫЙ ФУНКЦИОНАЛ)
-async def awareness_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+# Команды режимов мышления
+def awareness_mode(update: Update, context: CallbackContext):
+    update.message.reply_text(
         "🧘 **Режим Осознанности**\n\n"
         "Давайте исследуем ваши мысли и чувства. Что вы хотите понять глубже?\n\n"
         "Задавайте вопросы о смыслах, ценностях, самоощущении - я помогу найти ясность."
     )
 
-async def strategy_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+def strategy_mode(update: Update, context: CallbackContext):
+    update.message.reply_text(
         "🧭 **Режим Стратегии**\n\n"
         "Давайте построим план. Какая цель или задача вас сейчас волнует?\n\n"
         "Опишите ситуацию - вместе найдем оптимальный путь и расставим приоритеты."
     )
 
-async def creative_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+def creative_mode(update: Update, context: CallbackContext):
+    update.message.reply_text(
         "🎨 **Режим Креативности**\n\n"
         "Давайте найдем неожиданные решения. Что хотите создать или изменить?\n\n"
         "Расскажите о вызове - исследуем альтернативные подходы и свежие идеи."
@@ -273,23 +335,27 @@ async def creative_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     print("🔄 Инициализация MetaPersona Deep...")
     
-    # Создаем приложение бота
-    application = Application.builder().token(BOT_TOKEN).build()
+    # Инициализируем базу данных
+    init_db()
     
-    # Добавляем обработчики (ВЕСЬ ФУНКЦИОНАЛ)
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("awareness", awareness_mode))
-    application.add_handler(CommandHandler("strategy", strategy_mode))
-    application.add_handler(CommandHandler("creative", creative_mode))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    # Создаем updater
+    updater = Updater(BOT_TOKEN, use_context=True)
+    
+    # Добавляем обработчики
+    dp = updater.dispatcher
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("awareness", awareness_mode))
+    dp.add_handler(CommandHandler("strategy", strategy_mode))
+    dp.add_handler(CommandHandler("creative", creative_mode))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
     
     print("✅ META PERSONA DEEP ЗАПУЩЕН!")
     print("🚀 Бот готов к работе. Проверяйте в Telegram...")
-    print("📋 Функционал: Интервью + 3 режима мышления + DeepSeek API")
+    print("📋 Функционал: Интервью + 3 режима мышления + История диалогов")
     
     # Запускаем бота
-    application.run_polling()
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == '__main__':
     main()
-
