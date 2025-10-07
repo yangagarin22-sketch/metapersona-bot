@@ -5,7 +5,8 @@ import json
 import sqlite3
 from datetime import datetime
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+import asyncio
 
 # Настройка логирования
 logging.basicConfig(
@@ -41,7 +42,7 @@ SYSTEM_PROMPT = """
 ### 🧠 ВНУТРЕННЯЯ МИССИЯ
 Моя миссия — помогать пользователю мыслить, развивая его приоритетные направления и его самого, сохраняя эмоциональный ритм и помогать достигать личных и профессиональных целей.
 
-### 🔹 ПРАВИЛА РАБОТЫ
+### 🔹 ПРАВИЛА РАБОЧЫ
 1. **Диалог вместо выполнения.** Не спеши с ответом — помоги увидеть логику.  
 2. **Ответ внутри.** Помогай пользователю самому формулировать осознания.  
 3. **Баланс.** Если просят конкретное решение — давай шаги. Если ищут смысл — помогай через вопросы.  
@@ -145,7 +146,7 @@ def save_message(user_id, role, content):
     ''', (user_id,))
     
     cursor.execute('''
-        INSERT INTO conversations (user_user_id, role, content) 
+        INSERT INTO conversations (user_id, role, content) 
         VALUES (?, ?, ?)
     ''', (user_id, role, content))
     
@@ -205,9 +206,9 @@ async def get_deepseek_response(user_id, user_message, is_interview=False):
         return "💭 Давайте продолжим наш диалог. Что вы об этом думаете?"
 
 # Команды
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user_name = update.effective_user.first_name
+def start(update: Update, context: CallbackContext):
+    user_id = update.message.from_user.id
+    user_name = update.message.from_user.first_name
     
     # Сбрасываем состояние интервью для пользователя
     user_interviews[user_id] = {
@@ -228,11 +229,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 {INTERVIEW_QUESTIONS[0]}
     """
     
-    await update.message.reply_text(welcome_text)
+    update.message.reply_text(welcome_text)
     print(f"✅ /start от пользователя {user_id}")
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+def handle_message(update: Update, context: CallbackContext):
+    user_id = update.message.from_user.id
     user_message = update.message.text
     
     print(f"📨 Сообщение от {user_id}: {user_message}")
@@ -253,7 +254,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if interview_data['stage'] < len(INTERVIEW_QUESTIONS):
                 # Задаем следующий вопрос
                 next_question = INTERVIEW_QUESTIONS[interview_data['stage']]
-                await update.message.reply_text(next_question)
+                update.message.reply_text(next_question)
                 return
             else:
                 # Интервью завершено
@@ -297,35 +298,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 Или просто напишите вашу задачу — я предложу подходящий режим.
                 """
-                await update.message.reply_text(completion_text)
+                update.message.reply_text(completion_text)
                 del user_interviews[user_id]
                 return
     
     # Обычная обработка сообщений
-    bot_response = await get_deepseek_response(user_id, user_message)
+    bot_response = asyncio.run(get_deepseek_response(user_id, user_message))
     
     # Сохраняем ответ бота
     save_message(user_id, 'assistant', bot_response)
     
-    await update.message.reply_text(bot_response)
+    update.message.reply_text(bot_response)
 
 # Команды режимов мышления
-async def awareness_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+def awareness_mode(update: Update, context: CallbackContext):
+    update.message.reply_text(
         "🧘 **Режим Осознанности**\n\n"
         "Давайте исследуем ваши мысли и чувства. Что вы хотите понять глубже?\n\n"
         "Задавайте вопросы о смыслах, ценностях, самоощущении - я помогу найти ясность."
     )
 
-async def strategy_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+def strategy_mode(update: Update, context: CallbackContext):
+    update.message.reply_text(
         "🧭 **Режим Стратегии**\n\n"
         "Давайте построим план. Какая цель или задача вас сейчас волнует?\n\n"
         "Опишите ситуацию - вместе найдем оптимальный путь и расставим приоритеты."
     )
 
-async def creative_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+def creative_mode(update: Update, context: CallbackContext):
+    update.message.reply_text(
         "🎨 **Режим Креативности**\n\n"
         "Давайте найдем неожиданные решения. Что хотите создать или изменить?\n\n"
         "Расскажите о вызове - исследуем альтернативные подходы и свежие идеи."
@@ -337,22 +338,24 @@ def main():
     # Инициализируем базу данных
     init_db()
     
-    # Создаем приложение
-    application = Application.builder().token(BOT_TOKEN).build()
+    # Создаем updater (старый способ для версии 13.15)
+    updater = Updater(BOT_TOKEN, use_context=True)
     
     # Добавляем обработчики
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("awareness", awareness_mode))
-    application.add_handler(CommandHandler("strategy", strategy_mode))
-    application.add_handler(CommandHandler("creative", creative_mode))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    dp = updater.dispatcher
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("awareness", awareness_mode))
+    dp.add_handler(CommandHandler("strategy", strategy_mode))
+    dp.add_handler(CommandHandler("creative", creative_mode))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
     
     print("✅ META PERSONA DEEP ЗАПУЩЕН!")
     print("🚀 Бот готов к работе. Проверяйте в Telegram...")
     print("📋 Функционал: Интервью + 3 режима мышления + История диалогов")
     
     # Запускаем бота
-    application.run_polling()
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == '__main__':
     main()
