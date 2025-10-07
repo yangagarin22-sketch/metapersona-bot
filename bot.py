@@ -6,7 +6,8 @@ import sqlite3
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
-
+import sys
+sys.modules['imghdr'] = type(sys)('imghdr')  # Фикс для отсутствующей библиотеки
 # Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -359,3 +360,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
