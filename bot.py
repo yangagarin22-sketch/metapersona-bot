@@ -1,9 +1,27 @@
 import os
-import logging
-import aiohttp
-import json
-import sqlite3
-from datetime import datetime
+import sys
+
+# === ДИАГНОСТИКА ПЕРЕМЕННЫХ ===
+print("=== ДИАГНОСТИКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ===")
+print("Все переменные окружения:")
+for key, value in os.environ.items():
+    if any(word in key.upper() for word in ['BOT', 'TOKEN', 'KEY', 'DEEP']):
+        print(f"{key}: {'***СКРЫТО***' if value else '❌ ПУСТО'}")
+print("========================================")
+
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
+DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
+
+print(f"BOT_TOKEN: {BOT_TOKEN}")
+print(f"DEEPSEEK_API_KEY: {DEEPSEEK_API_KEY}")
+
+if not BOT_TOKEN or not DEEPSEEK_API_KEY:
+    print("❌ ПЕРЕМЕННЫЕ НЕ НАЙДЕНЫ!")
+    print("Проверьте в Render: Environment → Variables")
+    sys.exit(1)
+
+print("✅ ПЕРЕМЕННЫЕ НАЙДЕНЫ!")
+# === КОНЕЦ ДИАГНОСТИКИ ===
 
 # === ФИКТИВНЫЙ HTTP СЕРВЕР ДЛЯ RENDER ===
 import threading
@@ -21,20 +39,23 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.end_headers()
     
     def log_message(self, format, *args):
-        pass  # Отключаем логи запросов
+        pass
 
 def start_health_server():
-    """Запускает минимальный HTTP сервер для проверки здоровья"""
     server = HTTPServer(('0.0.0.0', 10000), HealthHandler)
     thread = threading.Thread(target=server.serve_forever)
-    thread.daemon = True  # Демон-поток (остановится с основным)
+    thread.daemon = True
     thread.start()
     print("✅ Health check server started on port 10000")
 
-# Запускаем сервер проверки здоровья
 start_health_server()
 # === КОНЕЦ ФИКТИВНОГО СЕРВЕРА ===
 
+import logging
+import aiohttp
+import json
+import sqlite3
+from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -388,4 +409,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
