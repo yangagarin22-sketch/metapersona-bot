@@ -5,12 +5,35 @@ import json
 import sqlite3
 from datetime import datetime
 
-# FIX для Python 3.13 - должен быть ПЕРВЫМ
-import sys
-if sys.version_info >= (3, 13):
-    import types
-    sys.modules['imghdr'] = types.ModuleType('imghdr')
-    sys.modules['imghdr'].what = lambda x: None
+# === ФИКТИВНЫЙ HTTP СЕРВЕР ДЛЯ RENDER ===
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/healthz':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'OK')
+        else:
+            self.send_response(404)
+            self.end_headers()
+    
+    def log_message(self, format, *args):
+        pass  # Отключаем логи запросов
+
+def start_health_server():
+    """Запускает минимальный HTTP сервер для проверки здоровья"""
+    server = HTTPServer(('0.0.0.0', 10000), HealthHandler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.daemon = True  # Демон-поток (остановится с основным)
+    thread.start()
+    print("✅ Health check server started on port 10000")
+
+# Запускаем сервер проверки здоровья
+start_health_server()
+# === КОНЕЦ ФИКТИВНОГО СЕРВЕРА ===
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -365,3 +388,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
