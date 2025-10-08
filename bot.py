@@ -12,7 +12,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 print("=== META PERSONA DEEP BOT ===")
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
-ADMIN_CHAT_ID = os.environ.get('ADMIN_CHAT_ID', '8413337220')  # Ваш ID для уведомлений
+ADMIN_CHAT_ID = os.environ.get('ADMIN_CHAT_ID', '8413337220')
 
 print(f"BOT_TOKEN: {'✅' if BOT_TOKEN else '❌'}")
 print(f"DEEPSEEK_API_KEY: {'✅' if DEEPSEEK_API_KEY else '❌'}")
@@ -22,10 +22,10 @@ if not BOT_TOKEN or not DEEPSEEK_API_KEY:
     print("❌ ОШИБКА: Не установлены токены!")
     sys.exit(1)
 
-# === WHITELIST ПОЛЬЗОВАТЕЛЕЙ ===
+# === WHITELIST ===
 ALLOWED_USERS = {
     '8413337220',  # Ваш ID
-    # Добавляйте сюда ID разрешенных пользователей
+    '543432966',   # Дополнительный ID
 }
 
 # === HEALTH SERVER ===
@@ -92,7 +92,6 @@ def init_db():
         )
     ''')
     
-    # Настройки бота
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS bot_settings (
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -102,9 +101,7 @@ def init_db():
         )
     ''')
     
-    # Инициализация настроек
     cursor.execute('INSERT OR IGNORE INTO bot_settings (id) VALUES (1)')
-    
     conn.commit()
     conn.close()
     print("✅ База данных инициализирована")
@@ -128,10 +125,9 @@ INTERVIEW_QUESTIONS = [
 
 # === АДМИН ФУНКЦИИ ===
 async def send_admin_notification(application, message):
-    """Отправить уведомление админу"""
     try:
         settings = get_bot_settings()
-        if settings and settings[0]:  # notifications_enabled
+        if settings and settings[0]:
             await application.bot.send_message(
                 chat_id=ADMIN_CHAT_ID, 
                 text=f"🔔 {message}"
@@ -140,7 +136,6 @@ async def send_admin_notification(application, message):
         print(f"❌ Ошибка отправки уведомления: {e}")
 
 def get_bot_settings():
-    """Получить настройки бота"""
     conn = sqlite3.connect('metapersona.db', check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('SELECT notifications_enabled, whitelist_enabled FROM bot_settings WHERE id = 1')
@@ -149,27 +144,22 @@ def get_bot_settings():
     return settings
 
 def update_bot_settings(notifications=None, whitelist=None):
-    """Обновить настройки бота"""
     conn = sqlite3.connect('metapersona.db', check_same_thread=False)
     cursor = conn.cursor()
-    
     if notifications is not None:
         cursor.execute('UPDATE bot_settings SET notifications_enabled = ? WHERE id = 1', (notifications,))
     if whitelist is not None:
         cursor.execute('UPDATE bot_settings SET whitelist_enabled = ? WHERE id = 1', (whitelist,))
-    
     conn.commit()
     conn.close()
 
 def is_user_allowed(user_id):
-    """Проверить доступ пользователя"""
     settings = get_bot_settings()
-    if settings and settings[1]:  # whitelist_enabled
+    if settings and settings[1]:
         return str(user_id) in ALLOWED_USERS
     return True
 
 def block_user(user_id):
-    """Заблокировать пользователя"""
     conn = sqlite3.connect('metapersona.db', check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('UPDATE users SET is_blocked = TRUE WHERE user_id = ?', (user_id,))
@@ -177,7 +167,6 @@ def block_user(user_id):
     conn.close()
 
 def unblock_user(user_id):
-    """Разблокировать пользователя"""
     conn = sqlite3.connect('metapersona.db', check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('UPDATE users SET is_blocked = FALSE WHERE user_id = ?', (user_id,))
@@ -185,7 +174,6 @@ def unblock_user(user_id):
     conn.close()
 
 def set_user_limit(user_id, limit):
-    """Установить кастомный лимит пользователю"""
     conn = sqlite3.connect('metapersona.db', check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('UPDATE users SET custom_limit = ? WHERE user_id = ?', (limit, user_id))
@@ -313,8 +301,7 @@ async def create_user_context(user_id, first_question):
 ### 🪶 ПРИНЦИПЫ ДИАЛОГА
 - Сначала вопросы — потом советы.  
 - Помогай видеть варианты.  
-- Поддерживай спокойный, осознанный тон.
-"""
+- Поддерживай спокойный, осознанный тон."""
     
     user_message = f"""
 {profile_text}
@@ -340,7 +327,7 @@ async def create_user_context(user_id, first_question):
 
 async def continue_conversation(user_id, user_message):
     user_data, answers, conversation = get_user_data(user_id)
-    recent_history = conversation[-5:] if len(conversation) > 5 else conversation
+    recent_history = conversation[-8:] if len(conversation) > 8 else conversation
     
     messages = []
     for role, content in recent_history:
@@ -396,16 +383,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_name = update.effective_user.first_name
     
-    # Проверка доступа
     if not is_user_allowed(user_id):
         await update.message.reply_text("❌ Доступ ограничен")
         return
     
-    # Уведомление админу о новом пользователе
     if str(user_id) != ADMIN_CHAT_ID:
         await send_admin_notification(context.application, f"🆕 Новый пользователь: {user_name} (ID: {user_id})")
     
-    # Сброс состояния
     conn = sqlite3.connect('metapersona.db', check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('''
@@ -420,7 +404,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 Я — MetaPersona, не бот и не ассистент.
 Я — пространство твоего мышления.
 
-🌱 Начни с простого:
 Здесь ты не ищешь ответы — ты начинаешь видеть их сам.
 
 Моя миссия — помогать тебе мыслить глубже, стратегичнее и осознаннее.
@@ -444,11 +427,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     print(f"📨 Сообщение от {user_id}: {user_message}")
     
-    # Логирование для админа
     if str(user_id) != ADMIN_CHAT_ID:
         await send_admin_notification(context.application, f"📝 Сообщение от {user_id}: {user_message}")
     
-    # Проверка доступа
     if not is_user_allowed(user_id):
         await update.message.reply_text("❌ Доступ ограничен")
         return
@@ -459,7 +440,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await start(update, context)
         return
     
-    # Проверка блокировки
     if user_data[7]:  # is_blocked
         await update.message.reply_text("❌ Ваш доступ ограничен")
         return
@@ -509,9 +489,12 @@ MetaPersona не спешит.
     # Сохраняем вопрос в буфер
     save_to_buffer(user_id, "user", user_message)
     
-    # ЭТАП 3: ДИАЛОГ
+    # ЭТАП 3: ДИАЛОГ С AI
+    await update.message.reply_text("💭 Думаю...")
+    
     if not context_created:
-        await update.message.reply_text("🔄 Создаю твой профиль MetaPersona...")
+        # ПЕРВЫЙ ЗАПРОС - СОЗДАНИЕ КОНТЕКСТА
+        print(f"🔄 Создание контекста для пользователя {user_id}")
         bot_response = await create_user_context(user_id, user_message)
         
         if bot_response:
@@ -522,7 +505,8 @@ MetaPersona не спешит.
             await update.message.reply_text("💡 Давай начнем наш диалог. Что для тебя важно сейчас?")
     
     else:
-        await update.message.reply_text("💭 Думаю...")
+        # ПОСЛЕДУЮЩИЕ ЗАПРОСЫ - ПРОДОЛЖЕНИЕ ДИАЛОГА
+        print(f"🔄 Продолжение диалога для пользователя {user_id}")
         bot_response = await continue_conversation(user_id, user_message)
         
         if bot_response:
@@ -564,7 +548,6 @@ async def creative_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === АДМИН КОМАНДЫ ===
 async def admin_notifications(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Включить/выключить уведомления"""
     if str(update.effective_user.id) != ADMIN_CHAT_ID:
         return
     
@@ -576,7 +559,6 @@ async def admin_notifications(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("🔔 Уведомления включены")
 
 async def admin_whitelist(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Включить/выключить whitelist"""
     if str(update.effective_user.id) != ADMIN_CHAT_ID:
         return
     
@@ -588,7 +570,6 @@ async def admin_whitelist(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🔓 Whitelist выключен. Доступ для всех")
 
 async def admin_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Заблокировать пользователя"""
     if str(update.effective_user.id) != ADMIN_CHAT_ID:
         return
     
@@ -598,7 +579,6 @@ async def admin_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"🚫 Пользователь {user_id} заблокирован")
 
 async def admin_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Разблокировать пользователя"""
     if str(update.effective_user.id) != ADMIN_CHAT_ID:
         return
     
@@ -608,7 +588,6 @@ async def admin_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Пользователь {user_id} разблокирован")
 
 async def admin_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Установить лимит пользователю"""
     if str(update.effective_user.id) != ADMIN_CHAT_ID:
         return
     
@@ -625,20 +604,17 @@ def main():
     try:
         application = Application.builder().token(BOT_TOKEN).build()
         
-        # Основные команды
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("awareness", awareness_mode))
         application.add_handler(CommandHandler("strategy", strategy_mode))
         application.add_handler(CommandHandler("creative", creative_mode))
         
-        # Админ команды
         application.add_handler(CommandHandler("notifications", admin_notifications))
         application.add_handler(CommandHandler("whitelist", admin_whitelist))
         application.add_handler(CommandHandler("block", admin_block))
         application.add_handler(CommandHandler("unblock", admin_unblock))
         application.add_handler(CommandHandler("setlimit", admin_limit))
         
-        # Обработчик сообщений
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         
         print("✅ Бот запущен с улучшениями!")
