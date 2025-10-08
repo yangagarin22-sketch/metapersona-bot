@@ -506,7 +506,8 @@ def main():
     logger.info("Starting MetaPersona Bot...")
     
     try:
-        application = Application.builder().token(BOT_TOKEN).build()
+        # IMPORTANT: disable Updater creation to avoid Python 3.13/PTB Updater bug
+        application = Application.builder().updater(None).token(BOT_TOKEN).build()
         
         application.add_handler(CommandHandler("start", start))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -524,6 +525,7 @@ def main():
         logger.info("Bot started")
         logger.info("Features: history 15 msgs, interview buffer, admin alerts")
         
+        # Require webhook mode because Updater is disabled
         if USE_WEBHOOK:
             port = int(os.environ.get('PORT', '10000'))
             base_url = os.environ.get('WEBHOOK_BASE_URL') or os.environ.get('RENDER_EXTERNAL_URL')
@@ -540,7 +542,7 @@ def main():
                 drop_pending_updates=True,
             )
         else:
-            application.run_polling(drop_pending_updates=True)
+            raise RuntimeError('USE_WEBHOOK=1 is required in env to run without Updater')
         
     except Exception as e:
         logger.exception(f"Startup error: {e}")
