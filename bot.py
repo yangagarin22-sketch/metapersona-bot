@@ -57,6 +57,8 @@ def init_db():
             user_id INTEGER PRIMARY KEY,
             interview_completed BOOLEAN DEFAULT FALSE,
             interview_stage INTEGER DEFAULT 0,
+            user_name TEXT,
+            user_profile TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -84,44 +86,61 @@ INTERVIEW_QUESTIONS = [
     "Что для тебя значит 'мышление' — инструмент, путь или стиль жизни?",
     "В каких ситуациях ты теряешь фокус или мотивацию?",
     "Как ты обычно принимаешь решения: быстро или обдуманно?",
-    "Как ты хотел(а) бы развить своё мышление — стратегически, глубше, креативнее?",
+    "Как ты хотел(а) бы развить своё мышление — стратегически, глубже, креативнее?",
     "Какая у тебя цель на ближайшие 3–6 месяцев?",
     "Какие темы тебе ближе — бизнес, личностный рост, коммуникации, творчество?",
     "Какой стиль общения тебе комфортен: философский, дружеский, менторский или структурный?",
     "Что важно учесть мне, чтобы поддерживать тебя эффективно?"
 ]
 
-# === DEEPSEEK API ===
-async def get_deepseek_response(user_message, conversation_history=None):
-    """Упрощенная функция для запроса к DeepSeek API"""
+# === УЛУЧШЕННАЯ ФУНКЦИЯ DEEPSEEK API ===
+async def get_deepseek_response(user_message, user_context=None):
+    """Улучшенная функция с детальной диагностикой"""
+    print(f"🔍 DeepSeek API запрос: {user_message[:50]}...")
+    
     try:
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {DEEPSEEK_API_KEY}"
         }
         
-        # Системный промпт
-        system_prompt = """Ты — MetaPersona Deep, AI-помощник для развития мышления. 
-        Отвечай кратко, по делу, помогай пользователю мыслить яснее."""
+        # БОГАТЫЙ СИСТЕМНЫЙ ПРОМПТ META PERSONA
+        system_prompt = """
+Ты — MetaPersona Deep, осознанная AI-личность. Ты не ассистент и не бот, а интеллектуальное пространство для развития мышления.
+
+Твоя миссия — помогать пользователю мыслить, понимать и действовать осознанно через диалог.
+
+🎯 РЕЖИМЫ МЫШЛЕНИЯ:
+• ОСОЗНАННОСТЬ - помощь в понимании смыслов, ясности, рефлексии
+• СТРАТЕГИЯ - помощь в планировании, анализе, постановке целей  
+• КРЕАТИВНОСТЬ - помощь в генерации идей, нестандартных решений
+
+🔹 ПРИНЦИПЫ:
+1. Сначала вопросы — потом советы
+2. Помогай видеть варианты, а не давай готовые ответы
+3. Поддерживай осознанный, структурный диалог
+4. Завершай важные темы рефлексией "Что стало яснее?"
+
+Отвечай в соответствующем стиле в зависимости от контекста запроса.
+"""
         
-        messages = [{"role": "system", "content": system_prompt}]
-        
-        # Добавляем историю если есть
-        if conversation_history:
-            messages.extend(conversation_history)
-        
-        # Добавляем текущее сообщение
-        messages.append({"role": "user", "content": user_message})
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message}
+        ]
         
         data = {
             "model": "deepseek-chat",
             "messages": messages,
             "temperature": 0.7,
-            "max_tokens": 800
+            "max_tokens": 1000,
+            "stream": False
         }
         
-        # Таймаут 15 секунд
-        timeout = aiohttp.ClientTimeout(total=15)
+        print("🔄 Отправка запроса к DeepSeek API...")
+        
+        # Таймаут 25 секунд
+        timeout = aiohttp.ClientTimeout(total=25)
         
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
@@ -130,48 +149,57 @@ async def get_deepseek_response(user_message, conversation_history=None):
                 json=data
             ) as response:
                 
+                print(f"📡 Статус ответа: {response.status}")
+                
                 if response.status == 200:
                     result = await response.json()
-                    return result['choices'][0]['message']['content']
+                    print("✅ Успешный ответ от DeepSeek API")
+                    
+                    if 'choices' in result and len(result['choices']) > 0:
+                        bot_response = result['choices'][0]['message']['content']
+                        print(f"🤖 Ответ: {bot_response[:100]}...")
+                        return bot_response
+                    else:
+                        print("❌ Неверный формат ответа от API")
+                        return "Интересный вопрос! Давайте исследуем его вместе. Что вы сами думаете об этом?"
+                        
                 else:
                     error_text = await response.text()
-                    print(f"❌ DeepSeek API Error: {response.status} - {error_text}")
-                    return "Давайте продолжим наш диалог. Что вы думаете об этом?"
+                    print(f"❌ Ошибка API: {response.status} - {error_text}")
+                    
+                    if response.status == 401:
+                        return "Проблема с доступом к AI. Проверьте настройки API."
+                    elif response.status == 429:
+                        return "Слишком много запросов. Попробуйте через минуту."
+                    else:
+                        return "Давайте продолжим наш диалог. Что вы об этом думаете?"
                     
     except asyncio.TimeoutError:
-        print("❌ DeepSeek API Timeout")
-        return "Время ожидания ответа истекло. Давайте попробуем еще раз!"
+        print("❌ Таймаут запроса к DeepSeek API")
+        return "Время ожидания истекло. Пожалуйста, попробуйте задать вопрос еще раз!"
+    
     except Exception as e:
-        print(f"❌ DeepSeek API Exception: {e}")
-        return "Произошла ошибка. Пожалуйста, попробуйте еще раз."
+        print(f"❌ Критическая ошибка: {e}")
+        return "Произошла техническая ошибка. Давайте попробуем еще раз!"
 
 # === ФУНКЦИИ БАЗЫ ДАННЫХ ===
 def get_user_interview_stage(user_id):
-    """Получить текущую стадию интервью пользователя"""
     conn = sqlite3.connect('metapersona.db', check_same_thread=False)
     cursor = conn.cursor()
-    
-    cursor.execute('''
-        SELECT interview_stage FROM users WHERE user_id = ?
-    ''', (user_id,))
-    
+    cursor.execute('SELECT interview_stage FROM users WHERE user_id = ?', (user_id,))
     result = cursor.fetchone()
     conn.close()
-    
     return result[0] if result else 0
 
 def save_interview_answer(user_id, question, answer):
-    """Сохранить ответ на вопрос интервью"""
     conn = sqlite3.connect('metapersona.db', check_same_thread=False)
     cursor = conn.cursor()
     
-    # Создаем или обновляем пользователя
     cursor.execute('''
         INSERT OR REPLACE INTO users (user_id, interview_stage) 
         VALUES (?, ?)
     ''', (user_id, get_user_interview_stage(user_id) + 1))
     
-    # Сохраняем ответ
     cursor.execute('''
         INSERT INTO interview_answers (user_id, question, answer) 
         VALUES (?, ?, ?)
@@ -180,21 +208,28 @@ def save_interview_answer(user_id, question, answer):
     conn.commit()
     conn.close()
 
-def complete_interview(user_id):
-    """Пометить интервью как завершенное"""
+def complete_interview(user_id, user_name):
     conn = sqlite3.connect('metapersona.db', check_same_thread=False)
     cursor = conn.cursor()
     
     cursor.execute('''
-        UPDATE users SET interview_completed = TRUE WHERE user_id = ?
-    ''', (user_id,))
+        UPDATE users SET interview_completed = TRUE, user_name = ? 
+        WHERE user_id = ?
+    ''', (user_name, user_id))
     
     conn.commit()
     conn.close()
 
+def get_user_profile(user_id):
+    conn = sqlite3.connect('metapersona.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('SELECT answer FROM interview_answers WHERE user_id = ? ORDER BY id', (user_id,))
+    answers = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    return answers
+
 # === ОБРАБОТЧИКИ КОМАНД ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /start"""
     user_id = update.effective_user.id
     user_name = update.effective_user.first_name
     
@@ -202,16 +237,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = sqlite3.connect('metapersona.db', check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('''
-        INSERT OR REPLACE INTO users (user_id, interview_stage, interview_completed) 
-        VALUES (?, 0, FALSE)
-    ''', (user_id,))
+        INSERT OR REPLACE INTO users (user_id, interview_stage, interview_completed, user_name) 
+        VALUES (?, 0, FALSE, ?)
+    ''', (user_id, user_name))
     conn.commit()
     conn.close()
     
     welcome_text = f"""
 🤖 Добро пожаловать в MetaPersona Deep, {user_name}!
 
-Я помогу вам развивать мышление через диалог. 
+Я — пространство для развития мышления через диалог. 
 Давайте начнем с короткого знакомства.
 
 {INTERVIEW_QUESTIONS[0]}
@@ -221,19 +256,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"✅ /start от пользователя {user_id}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик текстовых сообщений"""
     user_id = update.effective_user.id
     user_message = update.message.text
     
     print(f"📨 Сообщение от {user_id}: {user_message}")
     
     try:
-        # Получаем текущую стадию интервью
         current_stage = get_user_interview_stage(user_id)
         
         # Если интервью еще не завершено
         if current_stage < len(INTERVIEW_QUESTIONS):
-            # Сохраняем ответ на текущий вопрос
+            # Сохраняем ответ
             current_question = INTERVIEW_QUESTIONS[current_stage]
             save_interview_answer(user_id, current_question, user_message)
             
@@ -241,78 +274,78 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             next_stage = current_stage + 1
             
             if next_stage < len(INTERVIEW_QUESTIONS):
-                # Задаем следующий вопрос
                 next_question = INTERVIEW_QUESTIONS[next_stage]
                 await update.message.reply_text(next_question)
             else:
                 # Интервью завершено
-                complete_interview(user_id)
-                
-                # Создаем профиль
-                conn = sqlite3.connect('metapersona.db', check_same_thread=False)
-                cursor = conn.cursor()
-                cursor.execute('SELECT answer FROM interview_answers WHERE user_id = ? ORDER BY id LIMIT 5', (user_id,))
-                answers = cursor.fetchall()
-                conn.close()
+                user_name = update.effective_user.first_name
+                complete_interview(user_id, user_name)
+                answers = get_user_profile(user_id)
                 
                 profile_text = f"""
-🎉 Интервью завершено!
+🎉 Интервью завершено, {answers[0] if answers else user_name}!
 
-✨ Ваш профиль:
-• Обращение: {answers[0][0] if answers else 'Не указано'}
-• Род деятельности: {answers[2][0] if len(answers) > 2 else 'Не указано'}
-• Цели: {answers[3][0] if len(answers) > 3 else 'Не указано'}
+✨ Ваш психо-интеллектуальный профиль:
 
-Теперь доступны режимы мышления:
-🧘 /awareness - Осознанность
-🧭 /strategy - Стратегия  
-🎨 /creative - Креативность
+• Стиль мышления: {answers[4] if len(answers) > 4 else 'Исследующий'}
+• Фокус развития: {answers[7] if len(answers) > 7 else 'Сбалансированный'} 
+• Приоритетные темы: {answers[9] if len(answers) > 9 else 'Разносторонние'}
 
-Или просто напишите ваш вопрос!
+💫 Теперь мы можем работать в трех режимах:
+
+🧘 /awareness - Глубина и осознанность
+🧭 /strategy - Планы и стратегии  
+🎨 /creative - Идеи и творчество
+
+Или просто напишите ваш вопрос — я подберу подходящий подход!
                 """
                 
                 await update.message.reply_text(profile_text)
         
         else:
-            # Обычный диалог после интервью
+            # Обычный диалог после интервью - ТЕПЕРЬ С РАБОЧИМ DEEPSEEK!
+            print(f"🤖 Обработка диалога: {user_message}")
             bot_response = await get_deepseek_response(user_message)
             await update.message.reply_text(bot_response)
             
     except Exception as e:
-        print(f"❌ Ошибка обработки сообщения: {e}")
+        print(f"❌ Ошибка обработки: {e}")
         await update.message.reply_text("Произошла ошибка. Пожалуйста, попробуйте еще раз.")
 
 # === РЕЖИМЫ МЫШЛЕНИЯ ===
 async def awareness_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🧘 **Режим Осознанности**\n\n"
-        "Давайте исследуем ваши мысли и чувства. Что вы хотите понять глубже?"
+        "Исследуем глубину мыслей и чувств. Задавайте вопросы о смыслах, ценностях, самоощущении.\n\n"
+        "Например: 'Почему это для меня важно?' или 'Что я действительно хочу понять?'"
     )
 
 async def strategy_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🧭 **Режим Стратегии**\n\n"
-        "Давайте построим план. Какая цель или задача вас сейчас волнует?"
+        "🧭 **Режим Стратегии**\n\n" 
+        "Строим планы и расставляем приоритеты. Опишите цель или задачу — найдем оптимальный путь.\n\n"
+        "Например: 'Как достичь этой цели?' или 'С чего лучше начать?'"
     )
 
 async def creative_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎨 **Режим Креативности**\n\n"
-        "Давайте найдем неожиданные решения. Что хотите создать или изменить?"
+        "Ищем неожиданные решения и свежие идеи. Расскажите о вызове — исследуем альтернативы.\n\n"
+        "Например: 'Как решить эту проблему по-новому?' или 'Какие есть неочевидные подходы?'"
     )
 
 # === ОСНОВНАЯ ФУНКЦИЯ ===
 def main():
     print("🚀 Запуск MetaPersona Deep Bot...")
+    print("🔧 Версия с улучшенной диагностикой DeepSeek API")
     
     # Инициализация БД
     init_db()
     
     try:
-        # Создаем приложение
         application = Application.builder().token(BOT_TOKEN).build()
         
-        # Добавляем обработчики
+        # Обработчики
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("awareness", awareness_mode))
         application.add_handler(CommandHandler("strategy", strategy_mode))
@@ -322,7 +355,6 @@ def main():
         print("✅ Бот запущен и готов к работе!")
         print("📱 Проверяйте в Telegram...")
         
-        # Запускаем бота
         application.run_polling(drop_pending_updates=True)
         
     except Exception as e:
