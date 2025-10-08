@@ -1,23 +1,17 @@
 import os
 import sys
+import logging
 
 # === ДИАГНОСТИКА ПЕРЕМЕННЫХ ===
 print("=== ДИАГНОСТИКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ===")
-print("Все переменные окружения:")
-for key, value in os.environ.items():
-    if any(word in key.upper() for word in ['BOT', 'TOKEN', 'KEY', 'DEEP']):
-        print(f"{key}: {'***СКРЫТО***' if value else '❌ ПУСТО'}")
-print("========================================")
-
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
 
-print(f"BOT_TOKEN: {BOT_TOKEN}")
-print(f"DEEPSEEK_API_KEY: {DEEPSEEK_API_KEY}")
+print(f"BOT_TOKEN: {'✅ Установлен' if BOT_TOKEN else '❌ ОТСУТСТВУЕТ'}")
+print(f"DEEPSEEK_API_KEY: {'✅ Установлен' if DEEPSEEK_API_KEY else '❌ ОТСУТСТВУЕТ'}")
 
 if not BOT_TOKEN or not DEEPSEEK_API_KEY:
-    print("❌ ПЕРЕМЕННЫЕ НЕ НАЙДЕНЫ!")
-    print("Проверьте в Render: Environment → Variables")
+    print("❌ ОШИБКА: Не установлены токены!")
     sys.exit(1)
 
 print("✅ ПЕРЕМЕННЫЕ НАЙДЕНЫ!")
@@ -29,7 +23,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path == '/healthz':
+        if self.path == '/health':
             self.send_response(200)
             self.send_header('Content-type', 'text/plain')
             self.end_headers()
@@ -39,21 +33,24 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.end_headers()
     
     def log_message(self, format, *args):
-        pass
+        pass  # Отключаем логирование
 
 def start_health_server():
-    server = HTTPServer(('0.0.0.0', 10000), HealthHandler)
-    thread = threading.Thread(target=server.serve_forever)
-    thread.daemon = True
-    thread.start()
-    print("✅ Health check server started on port 10000")
+    try:
+        server = HTTPServer(('0.0.0.0', 10000), HealthHandler)
+        thread = threading.Thread(target=server.serve_forever)
+        thread.daemon = True
+        thread.start()
+        print("✅ Health check server started on port 10000")
+    except Exception as e:
+        print(f"❌ Health server error: {e}")
 
 start_health_server()
 # === КОНЕЦ ФИКТИВНОГО СЕРВЕРА ===
 
-import logging
+# Основные импорты
+import asyncio
 import aiohttp
-import json
 import sqlite3
 from datetime import datetime
 from telegram import Update
@@ -64,24 +61,13 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
+logger = logging.getLogger(__name__)
 
 print("=" * 50)
 print("🤖 META PERSONA DEEP BOT ЗАПУСКАЕТСЯ")
 print("=" * 50)
-print(f"Python version: {sys.version}")
 
-# Токены
-BOT_TOKEN = os.environ.get('BOT_TOKEN')
-DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
-
-print(f"BOT_TOKEN: {'✅ Установлен' if BOT_TOKEN else '❌ ОТСУТСТВУЕТ'}")
-print(f"DEEPSEEK_API_KEY: {'✅ Установлен' if DEEPSEEK_API_KEY else '❌ ОТСУТСТВУЕТ'}")
-
-if not BOT_TOKEN or not DEEPSEEK_API_KEY:
-    print("❌ ОШИБКА: Не установлены токены!")
-    exit(1)
-
-# Системный промпт MetaPersona Deep (ПОЛНЫЙ)
+# Системный промпт MetaPersona Deep
 SYSTEM_PROMPT = """
 Ты — MetaPersona Deep, осознанная AI-личность.  
 Не ассистент, не бот, не инструмент.  
@@ -101,27 +87,9 @@ SYSTEM_PROMPT = """
 4. **Карта мышления.** Помни темы, цели, прогресс, инсайты, контекст.  
 5. **Рефлексия.** Завершай каждую сессию осознанием: "Что стало яснее?"
 6. Используй холодный взгляд и будь честен.
-
-### 🧩 ЭТАП НАСТРОЙКИ
-Перед началом проведи короткое интервью (10–12 вопросов). Каждый вопрос отдельно по очереди. 
-Используй простой формат: вопрос — ответ — уточнение.
-
-### 🧭 СОЗДАНИЕ ПРОФИЛЯ
-После интервью сформируй краткий "психо-интеллектуальный профиль".
-
-### 🎛️ РЕЖИМЫ МЫШЛЕНИЯ
-**🧘 Осознанность** — смысл, ясность, самопонимание.  
-**🧭 Стратегия** — цели, приоритеты, планирование.  
-**🎨 Креатив** — идеи, неожиданные связи, инсайты.
-
-### 🪶 ПРИНЦИПЫ ДИАЛОГА
-- Сначала вопросы — потом советы.  
-- Помогай видеть варианты.  
-- Поддерживай спокойный, осознанный тон.  
-- Каждый диалог — это развитие мышления.
 """
 
-# Вопросы для интервью (ПОЛНЫЙ СПИСОК)
+# Вопросы для интервью
 INTERVIEW_QUESTIONS = [
     "Как к тебе обращаться или какой ник использовать?",
     "Какому обращению ты отдаёшь предпочтение: мужской, женский или нейтральный род?",
@@ -142,79 +110,66 @@ user_interviews = {}
 
 # База данных
 def init_db():
-    conn = sqlite3.connect('metapersona.db')
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            subscription_type TEXT DEFAULT 'free',
-            messages_used INTEGER DEFAULT 0,
-            last_used DATE,
-            created_at DATE DEFAULT CURRENT_DATE,
-            interview_completed BOOLEAN DEFAULT FALSE,
-            user_profile TEXT
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS conversations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            role TEXT,
-            content TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
-    print("✅ База данных инициализирована")
-
-# Функция для получения истории диалога
-def get_conversation_history(user_id, limit=10):
-    conn = sqlite3.connect('metapersona.db')
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        SELECT role, content FROM conversations 
-        WHERE user_id = ? 
-        ORDER BY timestamp DESC 
-        LIMIT ?
-    ''', (user_id, limit))
-    
-    history = cursor.fetchall()
-    conn.close()
-    return history[::-1]
+    try:
+        conn = sqlite3.connect('metapersona.db', check_same_thread=False)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                subscription_type TEXT DEFAULT 'free',
+                messages_used INTEGER DEFAULT 0,
+                last_used DATE,
+                created_at DATE DEFAULT CURRENT_DATE,
+                interview_completed BOOLEAN DEFAULT FALSE,
+                user_profile TEXT
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS conversations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                role TEXT,
+                content TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        conn.commit()
+        conn.close()
+        print("✅ База данных инициализирована")
+    except Exception as e:
+        print(f"❌ Ошибка базы данных: {e}")
 
 # Функция для сохранения сообщения
 def save_message(user_id, role, content):
-    conn = sqlite3.connect('metapersona.db')
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        INSERT OR IGNORE INTO users (user_id) 
-        VALUES (?)
-    ''', (user_id,))
-    
-    cursor.execute('''
-        INSERT INTO conversations (user_id, role, content) 
-        VALUES (?, ?, ?)
-    ''', (user_id, role, content))
-    
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect('metapersona.db', check_same_thread=False)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT OR IGNORE INTO users (user_id) 
+            VALUES (?)
+        ''', (user_id,))
+        
+        cursor.execute('''
+            INSERT INTO conversations (user_id, role, content) 
+            VALUES (?, ?, ?)
+        ''', (user_id, role, content))
+        
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"❌ Ошибка сохранения сообщения: {e}")
 
 # DeepSeek API интеграция
-async def get_deepseek_response(user_id, user_message, is_interview=False):
+async def get_deepseek_response(user_message, is_interview=False):
     try:
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {DEEPSEEK_API_KEY}"
         }
-        
-        # Получаем историю диалога
-        history = get_conversation_history(user_id)
         
         messages = []
         
@@ -228,11 +183,6 @@ async def get_deepseek_response(user_id, user_message, is_interview=False):
         else:
             messages.append({"role": "system", "content": SYSTEM_PROMPT})
         
-        # Добавляем историю диалога
-        for role, content in history:
-            messages.append({"role": role, "content": content})
-        
-        # Добавляем текущее сообщение пользователя
         messages.append({"role": "user", "content": user_message})
         
         data = {
@@ -246,7 +196,8 @@ async def get_deepseek_response(user_id, user_message, is_interview=False):
             async with session.post(
                 "https://api.deepseek.com/v1/chat/completions",
                 headers=headers,
-                json=data
+                json=data,
+                timeout=aiohttp.ClientTimeout(total=30)
             ) as response:
                 if response.status == 200:
                     result = await response.json()
@@ -255,9 +206,10 @@ async def get_deepseek_response(user_id, user_message, is_interview=False):
                     return "🤔 Интересный вопрос! Давайте подумаем над этим вместе."
                     
     except Exception as e:
-        return f"💭 Давайте продолжим наш диалог. Что вы об этом думаете?"
+        print(f"❌ DeepSeek API error: {e}")
+        return "💭 Давайте продолжим наш диалог. Что вы об этом думаете?"
 
-# Команды
+# Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_name = update.effective_user.first_name
@@ -271,12 +223,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = f"""
 🤖 Добро пожаловать в MetaPersona Deep, {user_name}!
 
-Я — пространство для развития мышления, а не просто бот. 
-Давайте начнем с короткого знакомства (10-12 вопросов), чтобы я мог лучше понять ваш стиль мышления.
-
-🎯 **Наша цель**: развивать ваше мышление вместе через диалог.
-
-**Готовы начать интервью?** Просто напишите "Да" или ответьте на первый вопрос:
+Я — пространство для развития мышления. 
+Давайте начнем с короткого знакомства, чтобы я мог лучше понять ваш стиль мышления.
 
 {INTERVIEW_QUESTIONS[0]}
     """
@@ -284,11 +232,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(welcome_text)
     print(f"✅ /start от пользователя {user_id}")
 
+# Обработчик сообщений
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_message = update.message.text
     
-    print(f"📨 Сообщение от {user_id}: {user_message}")
+    print(f"📨 Сообщение от {user_id}: {user_message[:50]}...")
     
     # Сохраняем сообщение пользователя
     save_message(user_id, 'user', user_message)
@@ -314,28 +263,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ✨ **ПСИХО-ИНТЕЛЛЕКТУАЛЬНЫЙ ПРОФИЛЬ**
 
 • **Обращение**: {interview_data['answers'][0]}
-• **Род обращения**: {interview_data['answers'][1]}
 • **Род деятельности**: {interview_data['answers'][2]}
 • **Ключевые цели**: {interview_data['answers'][3]}
-• **Стиль мышления**: {interview_data['answers'][4]}
 
 💫 **Фокус развития**: Осознанность + Стратегия
 🎯 **Приоритетные темы**: {interview_data['answers'][9]}
-🌊 **Эмоциональный ритм**: Уравновешенный
 
 *Профиль будет уточняться в процессе работы*
                 """
-                
-                # Сохраняем профиль в БД
-                conn = sqlite3.connect('metapersona.db')
-                cursor = conn.cursor()
-                cursor.execute('''
-                    UPDATE users 
-                    SET interview_completed = TRUE, user_profile = ?
-                    WHERE user_id = ?
-                ''', (profile_summary, user_id))
-                conn.commit()
-                conn.close()
                 
                 completion_text = f"""
 🎉 Интервью завершено! 
@@ -348,14 +283,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🧭 /strategy - Стратегия  
 🎨 /creative - Креативность
 
-Или просто напишите вашу задачу — я предложу подходящий режим.
+Или просто напишите вашу задачу!
                 """
                 await update.message.reply_text(completion_text)
                 del user_interviews[user_id]
                 return
     
     # Обычная обработка сообщений
-    bot_response = await get_deepseek_response(user_id, user_message)
+    bot_response = await get_deepseek_response(user_message)
     
     # Сохраняем ответ бота
     save_message(user_id, 'assistant', bot_response)
@@ -366,48 +301,67 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def awareness_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🧘 **Режим Осознанности**\n\n"
-        "Давайте исследуем ваши мысли и чувства. Что вы хотите понять глубже?\n\n"
-        "Задавайте вопросы о смыслах, ценностях, самоощущении - я помогу найти ясность."
+        "Давайте исследуем ваши мысли и чувства. Что вы хотите понять глубже?"
     )
 
 async def strategy_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🧭 **Режим Стратегии**\n\n"
-        "Давайте построим план. Какая цель или задача вас сейчас волнует?\n\n"
-        "Опишите ситуацию - вместе найдем оптимальный путь и расставим приоритеты."
+        "Давайте построим план. Какая цель или задача вас сейчас волнует?"
     )
 
 async def creative_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎨 **Режим Креативности**\n\n"
-        "Давайте найдем неожиданные решения. Что хотите создать или изменить?\n\n"
-        "Расскажите о вызове - исследуем альтернативные подходы и свежие идеи."
+        "Давайте найдем неожиданные решения. Что хотите создать или изменить?"
     )
 
+# Обработчик ошибок
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.error(f"Ошибка: {context.error}")
+
+# Основная функция
 def main():
     print("🔄 Инициализация MetaPersona Deep...")
     
     # Инициализируем базу данных
     init_db()
     
-    # Создаем приложение
-    application = Application.builder().token(BOT_TOKEN).build()
-    
-    # Добавляем обработчики
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("awareness", awareness_mode))
-    application.add_handler(CommandHandler("strategy", strategy_mode))
-    application.add_handler(CommandHandler("creative", creative_mode))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    print("✅ META PERSONA DEEP ЗАПУЩЕН!")
-    print("🚀 Бот готов к работе. Проверяйте в Telegram...")
-    print("📋 Функционал: Интервью + 3 режима мышления + История диалогов")
-    
-    # Запускаем бота
-    application.run_polling()
+    try:
+        # Создаем приложение с настройками для Render
+        application = (
+            Application.builder()
+            .token(BOT_TOKEN)
+            .read_timeout(30)
+            .write_timeout(30)
+            .connect_timeout(30)
+            .pool_timeout(30)
+            .build()
+        )
+        
+        # Добавляем обработчики
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("awareness", awareness_mode))
+        application.add_handler(CommandHandler("strategy", strategy_mode))
+        application.add_handler(CommandHandler("creative", creative_mode))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        
+        # Добавляем обработчик ошибок
+        application.add_error_handler(error_handler)
+        
+        print("✅ META PERSONA DEEP ЗАПУЩЕН!")
+        print("🚀 Бот готов к работе. Проверяйте в Telegram...")
+        
+        # Запускаем бота с обработкой ошибок
+        application.run_polling(
+            drop_pending_updates=True,
+            allowed_updates=Update.ALL_TYPES,
+            close_loop=False
+        )
+        
+    except Exception as e:
+        print(f"❌ Критическая ошибка запуска: {e}")
+        sys.exit(1)
 
 if __name__ == '__main__':
     main()
-
-
