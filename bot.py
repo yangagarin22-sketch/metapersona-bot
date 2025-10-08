@@ -6,6 +6,7 @@ import aiohttp
 import json
 from datetime import datetime
 from telegram import Update
+from telegram import __version__ as tg_version
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 print("=== META PERSONA DEEP BOT ===")
@@ -19,6 +20,7 @@ WHITELIST_IDS = set(
     int(x) for x in os.environ.get('WHITELIST_IDS', '').split(',') if x.strip().isdigit()
 )
 
+print(f"PTB: {tg_version}")
 print(f"BOT_TOKEN: {'✅' if BOT_TOKEN else '❌'}")
 print(f"DEEPSEEK_API_KEY: {'✅' if DEEPSEEK_API_KEY else '❌'}")
 print(f"ADMIN_CHAT_ID: {ADMIN_CHAT_ID}")
@@ -261,6 +263,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_message = update.message.text
+    # Игнорируем сообщения от ботов
+    if getattr(update.effective_user, 'is_bot', False):
+        return
     
     print(f"📨 Сообщение от {user_id}: {user_message}")
     
