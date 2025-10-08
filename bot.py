@@ -499,7 +499,7 @@ def main():
         application.add_handler(CommandHandler("stats", admin_stats))
         application.add_handler(CommandHandler("block", admin_block))
         application.add_handler(CommandHandler("unblock", admin_unblock))
-        application.add_handler(CommandHandler("setlimit", admin_set_limit))
+        application.add_handler(CommandHandler("setlimit", admin_setlimit))
         application.add_handler(CommandHandler("notify", admin_notify))
         application.add_handler(CommandHandler("echo", admin_echo))
         application.add_handler(CommandHandler("whitelist", admin_whitelist))
@@ -560,4 +560,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
