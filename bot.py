@@ -488,28 +488,23 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 # === ЗАПУСК ===
 def main():
     logger.info("Starting MetaPersona Bot...")
-    
-    try:
-        # Build application without Updater (we'll serve webhook ourselves)
+
+    async def run_server():
+        # Build application without Updater (custom webhook server)
         application = Application.builder().updater(None).token(BOT_TOKEN).build()
-        
+
+        # Handlers
         application.add_handler(CommandHandler("start", start))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        # Админ команды
         application.add_handler(CommandHandler("stats", admin_stats))
         application.add_handler(CommandHandler("block", admin_block))
         application.add_handler(CommandHandler("unblock", admin_unblock))
-        application.add_handler(CommandHandler("setlimit", admin_setlimit))
+        application.add_handler(CommandHandler("setlimit", admin_set_limit))
         application.add_handler(CommandHandler("notify", admin_notify))
         application.add_handler(CommandHandler("echo", admin_echo))
         application.add_handler(CommandHandler("whitelist", admin_whitelist))
-        # Error handler
         application.add_error_handler(error_handler)
-        
-        logger.info("Bot started")
-        logger.info("Features: history 15 msgs, interview buffer, admin alerts")
-        
-        # Always run as webhook via aiohttp app (no Updater involved)
+
         port = int(os.environ.get('PORT', '10000'))
         base_url = os.environ.get('WEBHOOK_BASE_URL') or os.environ.get('RENDER_EXTERNAL_URL')
         if not base_url:
@@ -517,6 +512,9 @@ def main():
         url_path = f"/webhook/{BOT_TOKEN}"
         webhook_url = base_url.rstrip('/') + url_path
         logger.info(f"Webhook: {webhook_url} on port {port}")
+
+        # aiohttp app
+        aio = web.Application()
 
         async def handle_health(request: web.Request):
             return web.Response(text='OK')
@@ -530,26 +528,36 @@ def main():
                 logger.exception(f"Update processing error: {e}")
             return web.Response(text='OK')
 
-        aio = web.Application()
         aio.router.add_get('/health', handle_health)
         aio.router.add_post(url_path, handle_tg)
 
-        async def runner():
-            async with application:
-                await application.start()
-                runner = web.AppRunner(aio)
-                await runner.setup()
-                site = web.TCPSite(runner, '0.0.0.0', port)
-                await site.start()
-                logger.info('Aiohttp server started')
-                await application.bot.set_webhook(webhook_url)
-                await application.wait_closed()
+        # Start app and webhook
+        await application.initialize()
+        await application.start()
+        runner = web.AppRunner(aio)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', port)
+        await site.start()
+        logger.info('Aiohttp server started')
+        await application.bot.set_webhook(webhook_url, drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
+        try:
+            # Sleep forever
+            await asyncio.Event().wait()
+        finally:
+            try:
+                await application.bot.delete_webhook(drop_pending_updates=False)
+            except Exception:
+                pass
+            await application.stop()
+            await application.shutdown()
+            await runner.cleanup()
 
-        asyncio.get_event_loop().run_until_complete(runner())
-        
+    try:
+        asyncio.run(run_server())
     except Exception as e:
         logger.exception(f"Startup error: {e}")
         sys.exit(1)
 
 if __name__ == '__main__':
     main()
+
