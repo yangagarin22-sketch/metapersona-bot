@@ -241,6 +241,7 @@ def main():
     print("🚀 Запуск MetaPersona Bot...")
     
     try:
+        # Используем Application builder (современный подход для версии 20.x)
         application = Application.builder().token(BOT_TOKEN).build()
         
         application.add_handler(CommandHandler("start", start))
@@ -249,10 +250,8 @@ def main():
         print("✅ Бот запущен!")
         print("📊 Функции: История диалогов (15 сообщений), Сохранение интервью, Уведомления админа")
         
-        application.run_polling(
-            drop_pending_updates=True,
-            allowed_updates=Update.ALL_TYPES
-        )
+        # Простой запуск без сложных параметров
+        application.run_polling()
         
     except Exception as e:
         print(f"❌ Ошибка запуска: {e}")
