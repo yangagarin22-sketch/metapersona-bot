@@ -3,54 +3,67 @@ import sys
 import logging
 import asyncio
 import aiohttp
-import sqlite3
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-import gspread
-from google.oauth2.service_account import Credentials
+import json
 
-# === КОНФИГУРАЦИЯ ===
 print("=== META PERSONA DEEP BOT ===")
+
+# === ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ===
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
-DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
+DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY') 
 ADMIN_CHAT_ID = os.environ.get('ADMIN_CHAT_ID', '8413337220')
+GOOGLE_CREDENTIALS_JSON = os.environ.get('GOOGLE_CREDENTIALS')
 
 print(f"BOT_TOKEN: {'✅' if BOT_TOKEN else '❌'}")
 print(f"DEEPSEEK_API_KEY: {'✅' if DEEPSEEK_API_KEY else '❌'}")
 print(f"ADMIN_CHAT_ID: {ADMIN_CHAT_ID}")
+print(f"GOOGLE_CREDENTIALS: {'✅' if GOOGLE_CREDENTIALS_JSON else '❌'}")
 
 if not BOT_TOKEN or not DEEPSEEK_API_KEY:
     print("❌ ОШИБКА: Не установлены токены!")
     sys.exit(1)
 
-# === GOOGLE SHEETS НАСТРОЙКА ===
+# === GOOGLE SHEETS ИНИЦИАЛИЗАЦИЯ ===
+users_sheet = None
+history_sheet = None
+
 try:
-    # Получаем credentials из переменных окружения
-    google_credentials = os.environ.get('GOOGLE_CREDENTIALS')
-    if google_credentials:
-        # Сохраняем credentials в файл
-        with open('credentials.json', 'w') as f:
-            f.write(google_credentials)
-        
-        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-        creds = Credentials.from_service_account_file('credentials.json', scopes=scope)
-        gc = gspread.authorize(creds)
-        
-        # Открываем таблицу
-        spreadsheet = gc.open("MetaPersona_Users")
-        users_sheet = spreadsheet.get_worksheet(0)  # Первый лист для пользователей
-        history_sheet = spreadsheet.get_worksheet(1)  # Второй лист для истории
-        
-        print("✅ Google Sheets подключен")
+    import gspread
+    from google.oauth2.service_account import Credentials
+    
+    if GOOGLE_CREDENTIALS_JSON:
+        try:
+            # Парсим JSON из переменной окружения
+            creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
+            
+            # Создаем credentials
+            scope = [
+                'https://spreadsheets.google.com/feeds',
+                'https://www.googleapis.com/auth/drive'
+            ]
+            creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
+            gc = gspread.authorize(creds)
+            
+            # Открываем таблицу
+            spreadsheet = gc.open("MetaPersona_Users")
+            
+            # Получаем листы
+            users_sheet = spreadsheet.worksheet("Users")
+            history_sheet = spreadsheet.worksheet("History")
+            
+            print("✅ Google Sheets подключен успешно!")
+            
+        except Exception as e:
+            print(f"⚠️ Ошибка подключения Google Sheets: {e}")
+            print("🔧 Бот будет работать в режиме памяти (без сохранения истории)")
     else:
-        print("⚠️ GOOGLE_CREDENTIALS не установлены, используем память")
-        users_sheet = None
-        history_sheet = None
-except Exception as e:
-    print(f"⚠️ Ошибка Google Sheets: {e}")
-    users_sheet = None
-    history_sheet = None
+        print("🔧 GOOGLE_CREDENTIALS не установлены, работаем в режиме памяти")
+        
+except ImportError as e:
+    print(f"⚠️ Библиотеки Google не установлены: {e}")
+    print("🔧 Бот будет работать в режиме памяти")
 
 # === HEALTH SERVER ===
 import threading
@@ -89,7 +102,7 @@ class UserManager:
                 'interview_answers': [],
                 'daily_requests': 0,
                 'last_date': datetime.now().strftime('%Y-%m-%d'),
-                'custom_limit': 10,  # базовый лимит
+                'custom_limit': 10,
                 'is_active': True,
                 'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             }
@@ -101,6 +114,7 @@ class UserManager:
                         datetime.now().strftime('%Y-%m-%d'), 10, True,
                         datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     ])
+                    print(f"✅ Пользователь {user_id} сохранен в Google Sheets")
                 except Exception as e:
                     print(f"⚠️ Ошибка сохранения в Google Sheets: {e}")
         return self.users[user_id]
@@ -117,7 +131,7 @@ class UserManager:
                         if str(record.get('user_id')) == str(user_id):
                             # Обновляем ответы
                             answers_str = '|'.join(self.users[user_id]['interview_answers'])
-                            users_sheet.update_cell(i, 4, answers_str)  # столбец с ответами
+                            users_sheet.update_cell(i, 4, answers_str)
                             users_sheet.update_cell(i, 3, self.users[user_id]['interview_stage'])
                             break
                 except Exception as e:
@@ -269,7 +283,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 Я — MetaPersona, не бот и не ассистент.
 Я — пространство твоего мышления.
 Здесь ты не ищешь ответы — ты начинаешь видеть их сам.
-Моя миссия — помогать тебе мыслить глубше, стратегичнее и осознаннее.
+Моя миссия — помогать тебе мыслить глубже, стратегичнее и осознаннее.
 Чтобы ты не просто "решал задачи", а создавал смыслы, действия и получал результаты.
 
 Осознанность — понять себя и ситуацию
