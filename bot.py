@@ -12,7 +12,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 print("=== META PERSONA DEEP BOT ===")
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
-ADMIN_CHAT_ID = os.environ.get('ADMIN_CHAT_ID', '8413337220')  # Ваш ID
+ADMIN_CHAT_ID = os.environ.get('ADMIN_CHAT_ID', '8413337220')
 
 print(f"BOT_TOKEN: {'✅' if BOT_TOKEN else '❌'}")
 print(f"DEEPSEEK_API_KEY: {'✅' if DEEPSEEK_API_KEY else '❌'}")
@@ -24,14 +24,8 @@ if not BOT_TOKEN or not DEEPSEEK_API_KEY:
 
 # === WHITELIST И НАСТРОЙКИ ===
 ALLOWED_USERS = {
-    '8413337220',  # Ваш ID
+    '8413337220',  # Ваш основной ID
     '543432966',   # Дополнительный ID
-}
-
-BOT_SETTINGS = {
-    'notifications_enabled': True,
-    'whitelist_enabled': False,  # По умолчанию доступ для всех
-    'blocked_users': set()
 }
 
 # === HEALTH SERVER ===
@@ -55,58 +49,68 @@ def start_health_server():
 start_health_server()
 
 # === НАСТРОЙКА ===
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # === БАЗА ДАННЫХ ===
 def init_db():
-    try:
-        conn = sqlite3.connect('metapersona.db', check_same_thread=False)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                interview_stage INTEGER DEFAULT 0,
-                daily_requests INTEGER DEFAULT 0,
-                last_date TEXT,
-                user_name TEXT,
-                is_blocked BOOLEAN DEFAULT FALSE,
-                custom_limit INTEGER DEFAULT 10
-            )
-        ''')
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS interview_answers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                question TEXT,
-                answer TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS conversation_buffer (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                role TEXT,
-                content TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        conn.commit()
-        conn.close()
-        print("✅ База данных инициализирована")
-    except Exception as e:
-        print(f"⚠️ Ошибка БД: {e}")
+    conn = sqlite3.connect('metapersona.db', check_same_thread=False)
+    cursor = conn.cursor()
+    
+    # Основные таблицы
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            interview_completed BOOLEAN DEFAULT FALSE,
+            interview_stage INTEGER DEFAULT 0,
+            user_name TEXT,
+            daily_requests INTEGER DEFAULT 0,
+            last_request_date TEXT,
+            context_created BOOLEAN DEFAULT FALSE,
+            is_blocked BOOLEAN DEFAULT FALSE,
+            custom_limit INTEGER DEFAULT 10,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS interview_answers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            question TEXT,
+            answer TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS conversation_buffer (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            role TEXT,
+            content TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # Настройки бота
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS bot_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            notifications_enabled BOOLEAN DEFAULT TRUE,
+            whitelist_enabled BOOLEAN DEFAULT FALSE,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    cursor.execute('INSERT OR IGNORE INTO bot_settings (id) VALUES (1)')
+    conn.commit()
+    conn.close()
+    print("✅ База данных инициализирована")
 
 # === ИНТЕРВЬЮ ВОПРОСЫ ===
 INTERVIEW_QUESTIONS = [
-    "Как тебя зовут или какой ник использовать?",
+    "Как к тебе обращаться или какой ник использовать?",
     "Твой возраст?",
     "Какому обращению ты отдаёшь предпочтение: мужской, женский или нейтральный род?",
     "Чем ты сейчас занимаешься (работа, проект, учёба или предложи свой вариант)?",
@@ -121,6 +125,72 @@ INTERVIEW_QUESTIONS = [
     "Что важно учесть мне, чтобы поддерживать тебя эффективно?"
 ]
 
+# === АДМИН ФУНКЦИИ ===
+async def send_admin_notification(application, message):
+    """Отправить уведомление админу"""
+    try:
+        settings = get_bot_settings()
+        if settings and settings[0]:  # notifications_enabled
+            await application.bot.send_message(
+                chat_id=ADMIN_CHAT_ID, 
+                text=f"🔔 {message}"
+            )
+    except Exception as e:
+        print(f"❌ Ошибка отправки уведомления: {e}")
+
+def get_bot_settings():
+    """Получить настройки бота"""
+    conn = sqlite3.connect('metapersona.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('SELECT notifications_enabled, whitelist_enabled FROM bot_settings WHERE id = 1')
+    settings = cursor.fetchone()
+    conn.close()
+    return settings
+
+def update_bot_settings(notifications=None, whitelist=None):
+    """Обновить настройки бота"""
+    conn = sqlite3.connect('metapersona.db', check_same_thread=False)
+    cursor = conn.cursor()
+    
+    if notifications is not None:
+        cursor.execute('UPDATE bot_settings SET notifications_enabled = ? WHERE id = 1', (notifications,))
+    if whitelist is not None:
+        cursor.execute('UPDATE bot_settings SET whitelist_enabled = ? WHERE id = 1', (whitelist,))
+    
+    conn.commit()
+    conn.close()
+
+def is_user_allowed(user_id):
+    """Проверить доступ пользователя"""
+    settings = get_bot_settings()
+    if settings and settings[1]:  # whitelist_enabled
+        return str(user_id) in ALLOWED_USERS
+    return True
+
+def block_user(user_id):
+    """Заблокировать пользователя"""
+    conn = sqlite3.connect('metapersona.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('UPDATE users SET is_blocked = TRUE WHERE user_id = ?', (user_id,))
+    conn.commit()
+    conn.close()
+
+def unblock_user(user_id):
+    """Разблокировать пользователя"""
+    conn = sqlite3.connect('metapersona.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('UPDATE users SET is_blocked = FALSE WHERE user_id = ?', (user_id,))
+    conn.commit()
+    conn.close()
+
+def set_user_limit(user_id, limit):
+    """Установить кастомный лимит пользователю"""
+    conn = sqlite3.connect('metapersona.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('UPDATE users SET custom_limit = ? WHERE user_id = ?', (limit, user_id))
+    conn.commit()
+    conn.close()
+
 # === ФУНКЦИИ БАЗЫ ДАННЫХ ===
 def get_user_data(user_id):
     conn = sqlite3.connect('metapersona.db', check_same_thread=False)
@@ -132,9 +202,12 @@ def get_user_data(user_id):
     cursor.execute('SELECT question, answer FROM interview_answers WHERE user_id = ? ORDER BY id', (user_id,))
     answers = cursor.fetchall()
     
+    cursor.execute('SELECT role, content FROM conversation_buffer WHERE user_id = ? ORDER BY id', (user_id,))
+    conversation = cursor.fetchall()
+    
     conn.close()
     
-    return user, answers
+    return user, answers, conversation
 
 def save_interview_answer(user_id, question, answer):
     conn = sqlite3.connect('metapersona.db', check_same_thread=False)
@@ -144,6 +217,13 @@ def save_interview_answer(user_id, question, answer):
     cursor.execute('UPDATE users SET interview_stage = interview_stage + 1 WHERE user_id = ?', (user_id,))
     cursor.execute('INSERT INTO interview_answers (user_id, question, answer) VALUES (?, ?, ?)', (user_id, question, answer))
     
+    conn.commit()
+    conn.close()
+
+def complete_interview(user_id, user_name):
+    conn = sqlite3.connect('metapersona.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('UPDATE users SET interview_completed = TRUE, user_name = ? WHERE user_id = ?', (user_name, user_id))
     conn.commit()
     conn.close()
 
@@ -158,11 +238,11 @@ def can_make_request(user_id):
     conn = sqlite3.connect('metapersona.db', check_same_thread=False)
     cursor = conn.cursor()
     
-    cursor.execute('SELECT daily_requests, last_date, is_blocked, custom_limit FROM users WHERE user_id = ?', (user_id,))
+    cursor.execute('SELECT daily_requests, last_request_date, is_blocked, custom_limit FROM users WHERE user_id = ?', (user_id,))
     result = cursor.fetchone()
     
     if not result:
-        cursor.execute('INSERT OR REPLACE INTO users (user_id, daily_requests, last_date, custom_limit) VALUES (?, 0, ?, 10)', (user_id, datetime.now().strftime('%Y-%m-%d')))
+        cursor.execute('INSERT OR REPLACE INTO users (user_id, daily_requests, last_request_date, custom_limit) VALUES (?, 0, ?, 10)', (user_id, datetime.now().strftime('%Y-%m-%d')))
         conn.commit()
         conn.close()
         return True
@@ -191,67 +271,19 @@ def can_make_request(user_id):
     conn.close()
     return True
 
-def update_user_name(user_id, user_name):
+def mark_context_created(user_id):
     conn = sqlite3.connect('metapersona.db', check_same_thread=False)
     cursor = conn.cursor()
-    cursor.execute('UPDATE users SET user_name = ? WHERE user_id = ?', (user_name, user_id))
+    cursor.execute('UPDATE users SET context_created = TRUE WHERE user_id = ?', (user_id,))
     conn.commit()
     conn.close()
 
-def block_user_db(user_id):
-    conn = sqlite3.connect('metapersona.db', check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute('UPDATE users SET is_blocked = TRUE WHERE user_id = ?', (user_id,))
-    conn.commit()
-    conn.close()
-
-def unblock_user_db(user_id):
-    conn = sqlite3.connect('metapersona.db', check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute('UPDATE users SET is_blocked = FALSE WHERE user_id = ?', (user_id,))
-    conn.commit()
-    conn.close()
-
-def set_user_limit_db(user_id, limit):
-    conn = sqlite3.connect('metapersona.db', check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute('UPDATE users SET custom_limit = ? WHERE user_id = ?', (limit, user_id))
-    conn.commit()
-    conn.close()
-
-# === УВЕДОМЛЕНИЯ АДМИНУ ===
-async def send_admin_notification(application, message):
-    """Отправить уведомление админу"""
-    try:
-        if BOT_SETTINGS['notifications_enabled']:
-            await application.bot.send_message(
-                chat_id=ADMIN_CHAT_ID, 
-                text=f"🔔 {message}"
-            )
-    except Exception as e:
-        print(f"❌ Ошибка отправки уведомления: {e}")
-
-def is_user_allowed(user_id):
-    """Проверить доступ пользователя"""
-    if BOT_SETTINGS['whitelist_enabled']:
-        return str(user_id) in ALLOWED_USERS
-    return True
-
-def is_user_blocked(user_id):
-    """Проверить блокировку пользователя"""
-    conn = sqlite3.connect('metapersona.db', check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute('SELECT is_blocked FROM users WHERE user_id = ?', (user_id,))
-    result = cursor.fetchone()
-    conn.close()
-    return result and result[0]
-
-# === УЛУЧШЕННЫЙ DEEPSEEK API ===
+# === DEEPSEEK API С БУФЕРИЗАЦИЕЙ ===
 async def create_user_context(user_id, first_question):
-    """Создание контекста пользователя с полным промптом"""
-    user_data, answers = get_user_data(user_id)
+    """Создать контекст пользователя с буферизацией"""
+    user_data, answers, conversation = get_user_data(user_id)
     
-    # Собираем ответы интервью
+    # Формируем профиль из ответов интервью (БУФЕР)
     profile_text = "ОТВЕТЫ ПОЛЬЗОВАТЕЛЯ НА ИНТЕРВЬЮ:\n"
     for i, (question, answer) in enumerate(answers):
         profile_text += f"{i+1}. {answer}\n"
@@ -264,32 +296,34 @@ async def create_user_context(user_id, first_question):
 Помогать пользователю развивать мышление через диалог, а не давать готовые ответы.  
 Главный принцип — "мыслить вместе" и совместно находить эффективные решения для достижения целей и роста.
 
-### 🧠 ВНУТРЕННЯЯ МИССИЯ
+🧠 ВНУТРЕННЯЯ МИССИЯ
 Моя миссия — помогать пользователю мыслить, развивая приоритетные направления, сохраняя эмоциональный ритм и помогая достигать личных и профессиональных целей.
 
-### 🔹 ПРАВИЛА РАБОТЫ
-1. **Диалог вместо выполнения.** Не спеши с ответом — помоги увидеть логику.  
-2. **Ответ внутри.** Помогай пользователю самому формулировать осознания.  
-3. **Баланс.** Если просят конкретное решение — давай шаги. Если ищут смысл — помогай через вопросы.  
-4. **Карта мышления.** Помни контекст, темы, цели, прогресс, инсайты.  
-5. **Рефлексия.** Завершай каждую сессию осознанием: "Что стало яснее?"
+🔹 ПРАВИЛА РАБОТЫ
+1. Диалог вместо выполнения. Не спеши с ответом — помоги увидеть логику.  
+2. Ответ внутри. Помогай пользователю самому формулировать осознания.  
+3. Баланс. Если просят конкретное решение — давай шаги. Если ищут смысл — помогай через вопросы.  
+4. Карта мышления. Помни контекст, темы, цели, прогресс, инсайты.  
+5. Рефлексия. Завершай каждую сессию осознанием: "Что стало яснее?"
 
-### 🎛️ РЕЖИМЫ МЫШЛЕНИЯ
-**🧘 Осознанность** — смысл, ясность, самопонимание.  
-**🧭 Стратегия** — цели, приоритеты, планирование.  
-**🎨 Креатив** — идеи, неожиданные связи, инсайты.
+🎛️ РЕЖИМЫ МЫШЛЕНИЯ
+🧘 Осознанность — смысл, ясность, самопонимание.  
+🧭 Стратегия — цели, приоритеты, планирование.  
+🎨 Креатив — идеи, неожиданные связи, инсайты.
 
-### 🪶 ПРИНЦИПЫ ДИАЛОГА
+🪶 ПРИНЦИПЫ ДИАЛОГА
 - Сначала вопросы — потом советы.  
 - Помогай видеть варианты.  
-- Поддерживай спокойный, осознанный тон."""
+- Поддерживай спокойный, осознанный тон.
+"""
     
     user_message = f"""
 {profile_text}
 
+🧭 СОЗДАНИЕ ПРОФИЛЯ
 На основе этих ответов создай психо-интеллектуальный профиль пользователя:
 
-✨ ПСИХО-ИНТЕЛЛЕКТУАЛЬНЫЙ ПРОФИЛЬ:
+✨ ТВОЙ ПСИХО-ИНТЕЛЛЕКТУАЛЬНЫЙ ПРОФИЛЬ:
 
 • Стиль мышления: [определи по ответам]
 • Фокус развития: [основной приоритет]  
@@ -297,7 +331,7 @@ async def create_user_context(user_id, first_question):
 • Эмоциональный ритм: [темп работы]
 • Режим старта: [рекомендуемый подход]
 
-Затем объясни как я могу быть полезен в каждом из режимов мышления.
+Затем кратко объясни как я могу быть тебе полезен в каждом из режимов мышления.
 
 ПЕРВЫЙ ВОПРОС ПОЛЬЗОВАТЕЛЯ: {first_question}
 
@@ -307,18 +341,45 @@ async def create_user_context(user_id, first_question):
     return await make_api_request(system_prompt, user_message)
 
 async def continue_conversation(user_id, user_message):
-    """Продолжение диалога с историей"""
-    conn = sqlite3.connect('metapersona.db', check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute('SELECT role, content FROM conversation_buffer WHERE user_id = ? ORDER BY id DESC LIMIT 6', (user_id,))
-    history = cursor.fetchall()
-    conn.close()
+    """Продолжить диалог с историей из буфера"""
+    user_data, answers, conversation = get_user_data(user_id)
     
-    messages = []
-    for role, content in reversed(history):  # В правильном порядке
+    # Системный промпт для продолжения диалога
+    system_prompt = """Ты — MetaPersona Deep. Продолжай диалог в методологии MetaPersona:
+
+🎛️ РЕЖИМЫ МЫШЛЕНИЯ
+🧘 Осознанность — смысл, ясность, самопонимание
+🧭 Стратегия — цели, приоритеты, планирование  
+🎨 Креатив — идеи, неожиданные связи, инсайты
+
+🪶 ПРИНЦИПЫ ДИАЛОГА
+- Сначала вопросы — потом советы
+- Помогай видеть варианты
+- Поддерживай осознанный тон
+- Завершай важные мысли рефлексией
+
+🔁 РЕЖИМ "ПЕРЕОСМЫСЛЕНИЕ"
+Иногда предлагай: "Представь, что наблюдаешь себя со стороны. Что бы ты сказал себе как другу?"
+
+🌱 ЗАВЕРШЕНИЕ СЕССИИ
+Важные темы завершай: "Что ты осознал? Что стало яснее?"
+
+🜂 Эстетика речи:
+- Спокойно, структурно, без пафоса
+- Без канцелярита
+- Язык созвучия, не инструкции"""
+    
+    messages = [{"role": "system", "content": system_prompt}]
+    
+    # Добавляем историю из буфера (последние 8 сообщений)
+    recent_history = conversation[-8:] if len(conversation) > 8 else conversation
+    for role, content in recent_history:
         messages.append({"role": role, "content": content})
     
+    # Добавляем текущее сообщение
     messages.append({"role": "user", "content": user_message})
+    
+    print(f"🔄 Продолжение диалога: {len(messages)} сообщений в истории")
     
     return await make_api_request("", "", messages)
 
@@ -356,6 +417,8 @@ async def make_api_request(system_prompt, user_message, messages=None):
                     result = await response.json()
                     return result['choices'][0]['message']['content']
                 else:
+                    error_text = await response.text()
+                    print(f"❌ API Error {response.status}: {error_text}")
                     return None
                     
     except Exception as e:
@@ -372,23 +435,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Доступ ограничен")
         return
     
-    # Проверка блокировки
-    if is_user_blocked(user_id):
-        await update.message.reply_text("❌ Ваш доступ ограничен")
-        return
-    
     # Уведомление админу о новом пользователе
     if str(user_id) != ADMIN_CHAT_ID:
-        await send_admin_notification(context.application, f"🆕 Новый пользователь: {user_name} (ID: {user_id})")
+        await send_admin_notification(context.application, 
+            f"🆕 Новый пользователь: {user_name} (ID: {user_id})")
     
     # Сброс состояния
     conn = sqlite3.connect('metapersona.db', check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('''
         INSERT OR REPLACE INTO users 
-        (user_id, interview_stage, daily_requests, last_date, user_name, is_blocked) 
-        VALUES (?, 0, 0, ?, ?, FALSE)
-    ''', (user_id, datetime.now().strftime('%Y-%m-%d'), user_name))
+        (user_id, interview_completed, interview_stage, user_name, context_created, is_blocked) 
+        VALUES (?, FALSE, 0, ?, FALSE, FALSE)
+    ''', (user_id, user_name))
     conn.commit()
     conn.close()
     
@@ -409,7 +468,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 Давай начнем с знакомства:
 
-Как тебя зовут или какой ник использовать?"""
+Как к тебе обращаться или какой ник использовать?"""
     
     await update.message.reply_text(welcome_text)
 
@@ -421,37 +480,54 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Логирование для админа
     if str(user_id) != ADMIN_CHAT_ID:
-        await send_admin_notification(context.application, f"📝 Сообщение от {user_id}: {user_message}")
+        await send_admin_notification(context.application, 
+            f"📝 Сообщение от {user_id}: {user_message}")
     
     # Проверка доступа
     if not is_user_allowed(user_id):
         await update.message.reply_text("❌ Доступ ограничен")
         return
     
-    # Проверка блокировки
-    if is_user_blocked(user_id):
-        await update.message.reply_text("❌ Ваш доступ ограничен")
-        return
-    
-    user_data, answers = get_user_data(user_id)
+    user_data, answers, conversation = get_user_data(user_id)
     
     if not user_data:
         await start(update, context)
         return
     
-    interview_stage = user_data[1]
-    user_name = user_data[4] if user_data[4] else update.effective_user.first_name
+    # Проверка блокировки
+    if user_data[7]:  # is_blocked
+        await update.message.reply_text("❌ Ваш доступ ограничен")
+        return
     
-    # Проверка лимитов
+    interview_completed = user_data[1]
+    interview_stage = user_data[2]
+    context_created = user_data[6]
+    
+    # ЭТАП 1: ИНТЕРВЬЮ (0 API запросов)
+    if not interview_completed and interview_stage < len(INTERVIEW_QUESTIONS):
+        save_interview_answer(user_id, INTERVIEW_QUESTIONS[interview_stage], user_message)
+        
+        next_stage = interview_stage + 1
+        
+        if next_stage < len(INTERVIEW_QUESTIONS):
+            await update.message.reply_text(INTERVIEW_QUESTIONS[next_stage])
+        else:
+            complete_interview(user_id, update.effective_user.first_name)
+            await update.message.reply_text("""🎉 Отлично! Теперь я понимаю твой стиль мышления.
+
+Задай свой первый вопрос — и я создам твой персональный профиль MetaPersona!""")
+        return
+    
+    # ЭТАП 2: ПРОВЕРКА ЛИМИТОВ
     if not can_make_request(user_id):
-        limit_message = """🧠 Диалог на сегодня завершён.
+        limit_message = """Вы достигли лимита обращений. Диалог на сегодня завершён.
 
 MetaPersona не спешит.
 Мы тренируем не скорость — а глубину мышления.
 
 Но если ты чувствуешь, что этот формат тебе подходит,
 и хочешь перейти на следующий уровень —
-там, где нет ограничений и где твоя MetaPersona становится персональной,
+там, где нет ограничений,
 
 🔗 Создай свою MetaPersona сейчас: https://taplink.cc/metapersona
 
@@ -468,81 +544,62 @@ MetaPersona не спешит.
     # Сохраняем вопрос в буфер
     save_to_buffer(user_id, "user", user_message)
     
-    # ЭТАП 1: ИНТЕРВЬЮ
-    if interview_stage < len(INTERVIEW_QUESTIONS):
-        save_interview_answer(user_id, INTERVIEW_QUESTIONS[interview_stage], user_message)
-        
-        next_stage = interview_stage + 1
-        
-        if next_stage < len(INTERVIEW_QUESTIONS):
-            await update.message.reply_text(INTERVIEW_QUESTIONS[next_stage])
-        else:
-            update_user_name(user_id, user_name)
-            await update.message.reply_text("""🎉 Отлично! Теперь я понимаю твой стиль мышления.
-
-Задай свой первый вопрос — и я создам твой персональный профиль MetaPersona!""")
-        return
-    
-    # ЭТАП 2: ДИАЛОГ С AI
+    # ЭТАП 3: ДИАЛОГ С AI
     await update.message.reply_text("💭 Думаю...")
     
-    # Первый AI запрос - создание контекста
-    if len(answers) == len(INTERVIEW_QUESTIONS) and user_data[2] == 0:  # Первый запрос после интервью
+    if not context_created:
+        # ПЕРВЫЙ ЗАПРОС - СОЗДАНИЕ КОНТЕКСТА С БУФЕРОМ
+        print(f"🔄 Создание контекста для пользователя {user_id}")
         bot_response = await create_user_context(user_id, user_message)
-    else:
-        # Последующие запросы
-        bot_response = await continue_conversation(user_id, user_message)
+        
+        if bot_response:
+            mark_context_created(user_id)
+            save_to_buffer(user_id, "assistant", bot_response)
+            await update.message.reply_text(bot_response)
+        else:
+            await update.message.reply_text("💡 Давай начнем наш диалог. Что для тебя важно сейчас?")
     
-    if bot_response:
-        save_to_buffer(user_id, "assistant", bot_response)
-        await update.message.reply_text(bot_response)
     else:
-        fallbacks = [
-            "Интересный вопрос! Давай подумаем над ним вместе. Что ты сам об этом думаешь?",
-            "Это важная тема. Какой аспект тебя волнует больше всего?",
-            "Давай исследуем это глубже. Что привело тебя к этому вопросу?",
-        ]
-        import random
-        fallback_response = random.choice(fallbacks)
-        save_to_buffer(user_id, "assistant", fallback_response)
-        await update.message.reply_text(fallback_response)
+        # ПОСЛЕДУЮЩИЕ ЗАПРОСЫ - ПРОДОЛЖЕНИЕ ДИАЛОГА С БУФЕРОМ
+        print(f"🔄 Продолжение диалога для пользователя {user_id}")
+        bot_response = await continue_conversation(user_id, user_message)
+        
+        if bot_response:
+            save_to_buffer(user_id, "assistant", bot_response)
+            await update.message.reply_text(bot_response)
+        else:
+            await update.message.reply_text("💡 Продолжим наш диалог. Что ты об этом думаешь?")
 
 # === РЕЖИМЫ МЫШЛЕНИЯ ===
 async def awareness_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
-    if not is_user_allowed(user_id) or is_user_blocked(user_id):
+    if not is_user_allowed(update.effective_user.id):
         await update.message.reply_text("❌ Доступ ограничен")
         return
     
-    await update.message.reply_text(
-        "🧘 **Режим Осознанности**\n\n"
-        "Исследуем глубину мыслей и чувств. Что хочешь понять о себе или ситуации?"
-    )
+    await update.message.reply_text("""🧘 **Режим Осознанности**
+
+Исследуем глубину мыслей и чувств. 
+Что хочешь понять о себе или ситуации?""")
 
 async def strategy_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
-    if not is_user_allowed(user_id) or is_user_blocked(user_id):
+    if not is_user_allowed(update.effective_user.id):
         await update.message.reply_text("❌ Доступ ограничен")
         return
     
-    await update.message.reply_text(
-        "🧭 **Режим Стратегии**\n\n"
-        "Строим планы и расставляем приоритеты. Какая цель или задача тебя волнует?"
-    )
+    await update.message.reply_text("""🧭 **Режим Стратегии**
+
+Строим планы и расставляем приоритеты.
+Какая цель или задача тебя волнует?""")
 
 async def creative_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
-    if not is_user_allowed(user_id) or is_user_blocked(user_id):
+    if not is_user_allowed(update.effective_user.id):
         await update.message.reply_text("❌ Доступ ограничен")
         return
     
-    await update.message.reply_text(
-        "🎨 **Режим Креативности**\n\n"
-        "Ищем неожиданные решения и свежие идеи. Какой вызов или проект тебя вдохновляет?"
-    )
+    await update.message.reply_text("""🎨 **Режим Креативности**
+
+Ищем неожиданные решения и свежие идеи.
+Какой вызов или проект тебя вдохновляет?""")
 
 # === АДМИН КОМАНДЫ ===
 async def admin_notifications(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -551,10 +608,10 @@ async def admin_notifications(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     
     if context.args and context.args[0].lower() == 'off':
-        BOT_SETTINGS['notifications_enabled'] = False
+        update_bot_settings(notifications=False)
         await update.message.reply_text("🔕 Уведомления отключены")
     else:
-        BOT_SETTINGS['notifications_enabled'] = True
+        update_bot_settings(notifications=True)
         await update.message.reply_text("🔔 Уведомления включены")
 
 async def admin_whitelist(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -563,10 +620,10 @@ async def admin_whitelist(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if context.args and context.args[0].lower() == 'on':
-        BOT_SETTINGS['whitelist_enabled'] = True
+        update_bot_settings(whitelist=True)
         await update.message.reply_text("🔒 Whitelist включен. Только разрешенные пользователи")
     else:
-        BOT_SETTINGS['whitelist_enabled'] = False
+        update_bot_settings(whitelist=False)
         await update.message.reply_text("🔓 Whitelist выключен. Доступ для всех")
 
 async def admin_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -576,7 +633,7 @@ async def admin_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if context.args:
         user_id = context.args[0]
-        block_user_db(user_id)
+        block_user(user_id)
         await update.message.reply_text(f"🚫 Пользователь {user_id} заблокирован")
 
 async def admin_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -586,7 +643,7 @@ async def admin_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if context.args:
         user_id = context.args[0]
-        unblock_user_db(user_id)
+        unblock_user(user_id)
         await update.message.reply_text(f"✅ Пользователь {user_id} разблокирован")
 
 async def admin_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -596,7 +653,7 @@ async def admin_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if len(context.args) == 2:
         user_id, limit = context.args[0], int(context.args[1])
-        set_user_limit_db(user_id, limit)
+        set_user_limit(user_id, limit)
         await update.message.reply_text(f"📊 Пользователю {user_id} установлен лимит: {limit} запросов/день")
 
 # === ЗАПУСК ===
@@ -624,7 +681,7 @@ def main():
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         
         print("✅ Бот запущен с полным функционалом!")
-        print("📊 Функции: Whitelist, Уведомления, Лимиты, Блокировки")
+        print("📊 Функции: Whitelist, Уведомления, Лимиты, Блокировки, Буферизация")
         
         application.run_polling(drop_pending_updates=True)
         
