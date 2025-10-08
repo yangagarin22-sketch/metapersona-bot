@@ -6,9 +6,17 @@ import aiohttp
 import json
 from datetime import datetime
 from telegram import Update
+from telegram import __version__ as tg_version
+import telegram.ext as tg_ext
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-print("=== META PERSONA BOT ===")
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(levelname)s | %(name)s | %(message)s'
+)
+logger = logging.getLogger("metapersona")
+
+logger.info("=== META PERSONA DEEP BOT ===")
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
 ADMIN_CHAT_ID = int(os.environ.get('ADMIN_CHAT_ID', '8413337220'))
@@ -19,16 +27,16 @@ WHITELIST_IDS = set(
     int(x) for x in os.environ.get('WHITELIST_IDS', '').split(',') if x.strip().isdigit()
 )
 
-print(f"BOT_TOKEN: {'✅' if BOT_TOKEN else '❌'}")
-print(f"DEEPSEEK_API_KEY: {'✅' if DEEPSEEK_API_KEY else '❌'}")
-print(f"ADMIN_CHAT_ID: {ADMIN_CHAT_ID}")
-print(f"GOOGLE_CREDENTIALS: {'✅' if GOOGLE_CREDENTIALS_JSON else '❌'}")
+logger.info(f"PTB: {tg_version}")
+logger.info(f"PTB ext module: {tg_ext.__file__}")
+logger.info(f"BOT_TOKEN: {'✅' if BOT_TOKEN else '❌'} | DEEPSEEK_API_KEY: {'✅' if DEEPSEEK_API_KEY else '❌'}")
+logger.info(f"ADMIN_CHAT_ID: {ADMIN_CHAT_ID} | GOOGLE_CREDENTIALS: {'✅' if GOOGLE_CREDENTIALS_JSON else '❌'}")
 
 if not BOT_TOKEN or not DEEPSEEK_API_KEY:
     print("❌ ОШИБКА: Не установлены токены!")
     sys.exit(1)
 
-# === HEALTH SERVER ===
+# === HEALTH SERVER (для polling) ===
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -44,9 +52,11 @@ def start_health_server():
     thread = threading.Thread(target=server.serve_forever)
     thread.daemon = True
     thread.start()
-    print("✅ Health server started")
+    logger.info("Health server started")
 
-start_health_server()
+USE_WEBHOOK = os.environ.get('USE_WEBHOOK', '0') in ('1','true','True')
+if not USE_WEBHOOK:
+    start_health_server()
 
 # === GOOGLE SHEETS (опционально) ===
 users_sheet = None
@@ -77,9 +87,9 @@ if GOOGLE_CREDENTIALS_JSON:
         except Exception:
             history_sheet = ss.add_worksheet(title='History', rows=5000, cols=10)
             history_sheet.append_row(['user_id','timestamp','role','message'])
-        print('✅ Google Sheets подключен!')
+        logger.info('Google Sheets connected')
     except Exception as e:
-        print(f"⚠️ Ошибка Google Sheets: {e}")
+        logger.warning(f"Google Sheets error: {e}")
         users_sheet = None
         history_sheet = None
 
@@ -228,7 +238,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             ])
         except Exception as e:
-            print(f"⚠️ Ошибка записи Users: {e}")
+            logger.warning(f"Users write error: {e}")
     
     # Уведомление админа
     if admin_settings['notify_new_users']:
@@ -238,7 +248,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text=f"🆕 Новый пользователь:\nID: {user_id}\nUsername: @{username}"
             )
         except Exception as e:
-            print(f"⚠️ Ошибка уведомления админа: {e}")
+            logger.warning(f"Admin notify error: {e}")
     
     welcome_text = (
         "Привет.\n"
@@ -261,8 +271,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_message = update.message.text
+    # Игнорируем сообщения от ботов
+    if getattr(update.effective_user, 'is_bot', False):
+        return
     
-    print(f"📨 Сообщение от {user_id}: {user_message}")
+    logger.info(f"msg from {user_id}: {user_message[:200]}")
     
     if user_id not in user_states:
         await start(update, context)
@@ -285,7 +298,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 user_message
             ])
         except Exception as e:
-            print(f"⚠️ Ошибка записи History: {e}")
+            logger.warning(f"History write error: {e}")
     # Эхо для админа (контроль)
     if admin_settings['echo_user_messages']:
         try:
@@ -294,7 +307,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text=f"📨 {user_id} (@{state.get('username')})\n{user_message}"
             )
         except Exception as e:
-            print(f"⚠️ Ошибка эха админа: {e}")
+            logger.warning(f"Admin echo error: {e}")
     
     # Проверка лимитов
     today = datetime.now().strftime('%Y-%m-%d')
@@ -370,7 +383,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     bot_response
                 ])
             except Exception as e:
-                print(f"⚠️ Ошибка записи History: {e}")
+                logger.warning(f"History write error: {e}")
         
         # Ограничиваем историю 15 сообщениями
         if len(state['conversation_history']) > 15:
@@ -394,7 +407,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     fallback_response
                 ])
             except Exception as e:
-                print(f"⚠️ Ошибка записи History: {e}")
+                logger.warning(f"History write error: {e}")
 
 # === АДМИН КОМАНДЫ ===
 async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -486,11 +499,11 @@ async def admin_whitelist(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Некорректный user_id")
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    logging.exception("Unhandled exception in handler", exc_info=context.error)
+    logger.exception("Unhandled exception in handler", exc_info=context.error)
 
 # === ЗАПУСК ===
 def main():
-    print("🚀 Запуск MetaPersona Bot...")
+    logger.info("Starting MetaPersona Bot...")
     
     try:
         application = Application.builder().token(BOT_TOKEN).build()
@@ -508,15 +521,30 @@ def main():
         # Error handler
         application.add_error_handler(error_handler)
         
-        print("✅ Бот запущен!")
-        print("📊 Функции: История диалогов (15 сообщений), Сохранение интервью, Уведомления админа")
+        logger.info("Bot started")
+        logger.info("Features: history 15 msgs, interview buffer, admin alerts")
         
-        application.run_polling(drop_pending_updates=True)
+        if USE_WEBHOOK:
+            port = int(os.environ.get('PORT', '10000'))
+            base_url = os.environ.get('WEBHOOK_BASE_URL') or os.environ.get('RENDER_EXTERNAL_URL')
+            if not base_url:
+                raise RuntimeError('WEBHOOK_BASE_URL/RENDER_EXTERNAL_URL не задан')
+            url_path = f"webhook/{BOT_TOKEN}"
+            webhook_url = base_url.rstrip('/') + '/' + url_path
+            logger.info(f"Webhook: {webhook_url} on port {port}")
+            application.run_webhook(
+                listen='0.0.0.0',
+                port=port,
+                url_path=url_path,
+                webhook_url=webhook_url,
+                drop_pending_updates=True,
+            )
+        else:
+            application.run_polling(drop_pending_updates=True)
         
     except Exception as e:
-        print(f"❌ Ошибка запуска: {e}")
+        logger.exception(f"Startup error: {e}")
         sys.exit(1)
 
 if __name__ == '__main__':
     main()
-
