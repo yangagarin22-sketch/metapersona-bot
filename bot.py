@@ -38,25 +38,9 @@ if not BOT_TOKEN or not DEEPSEEK_API_KEY:
 
 # === HEALTH SERVER (для polling) ===
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from aiohttp import web
 
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self): 
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b'OK')
-    def log_message(self, format, *args): pass
-
-def start_health_server():
-    server = HTTPServer(('0.0.0.0', 10000), HealthHandler)
-    thread = threading.Thread(target=server.serve_forever)
-    thread.daemon = True
-    thread.start()
-    logger.info("Health server started")
-
-USE_WEBHOOK = os.environ.get('USE_WEBHOOK', '0') in ('1','true','True')
-if not USE_WEBHOOK:
-    start_health_server()
+# We'll run a single aiohttp server for health + webhook
 
 # === GOOGLE SHEETS (опционально) ===
 users_sheet = None
@@ -506,7 +490,8 @@ def main():
     logger.info("Starting MetaPersona Bot...")
     
     try:
-        application = Application.builder().token(BOT_TOKEN).build()
+        # Build application without Updater (we'll serve webhook ourselves)
+        application = Application.builder().updater(None).token(BOT_TOKEN).build()
         
         application.add_handler(CommandHandler("start", start))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -524,23 +509,43 @@ def main():
         logger.info("Bot started")
         logger.info("Features: history 15 msgs, interview buffer, admin alerts")
         
-        if USE_WEBHOOK:
-            port = int(os.environ.get('PORT', '10000'))
-            base_url = os.environ.get('WEBHOOK_BASE_URL') or os.environ.get('RENDER_EXTERNAL_URL')
-            if not base_url:
-                raise RuntimeError('WEBHOOK_BASE_URL/RENDER_EXTERNAL_URL не задан')
-            url_path = f"webhook/{BOT_TOKEN}"
-            webhook_url = base_url.rstrip('/') + '/' + url_path
-            logger.info(f"Webhook: {webhook_url} on port {port}")
-            application.run_webhook(
-                listen='0.0.0.0',
-                port=port,
-                url_path=url_path,
-                webhook_url=webhook_url,
-                drop_pending_updates=True,
-            )
-        else:
-            application.run_polling(drop_pending_updates=True)
+        # Always run as webhook via aiohttp app (no Updater involved)
+        port = int(os.environ.get('PORT', '10000'))
+        base_url = os.environ.get('WEBHOOK_BASE_URL') or os.environ.get('RENDER_EXTERNAL_URL')
+        if not base_url:
+            raise RuntimeError('WEBHOOK_BASE_URL/RENDER_EXTERNAL_URL не задан')
+        url_path = f"/webhook/{BOT_TOKEN}"
+        webhook_url = base_url.rstrip('/') + url_path
+        logger.info(f"Webhook: {webhook_url} on port {port}")
+
+        async def handle_health(request: web.Request):
+            return web.Response(text='OK')
+
+        async def handle_tg(request: web.Request):
+            data = await request.json()
+            try:
+                upd = Update.de_json(data, application.bot)
+                await application.process_update(upd)
+            except Exception as e:
+                logger.exception(f"Update processing error: {e}")
+            return web.Response(text='OK')
+
+        aio = web.Application()
+        aio.router.add_get('/health', handle_health)
+        aio.router.add_post(url_path, handle_tg)
+
+        async def runner():
+            async with application:
+                await application.start()
+                runner = web.AppRunner(aio)
+                await runner.setup()
+                site = web.TCPSite(runner, '0.0.0.0', port)
+                await site.start()
+                logger.info('Aiohttp server started')
+                await application.bot.set_webhook(webhook_url)
+                await application.wait_closed()
+
+        asyncio.get_event_loop().run_until_complete(runner())
         
     except Exception as e:
         logger.exception(f"Startup error: {e}")
