@@ -8,7 +8,7 @@ from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-print("=== META PERSONA DEEP BOT ===")
+print("=== META PERSONA BOT ===")
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
 ADMIN_CHAT_ID = int(os.environ.get('ADMIN_CHAT_ID', '8413337220'))
@@ -519,3 +519,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
