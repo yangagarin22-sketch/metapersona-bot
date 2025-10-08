@@ -32,7 +32,7 @@ if not BOT_TOKEN or not DEEPSEEK_API_KEY:
     print("❌ ОШИБКА: Не установлены токены!")
     sys.exit(1)
 
-# === HEALTH SERVER ===
+# === HEALTH SERVER (для polling) ===
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -50,7 +50,9 @@ def start_health_server():
     thread.start()
     print("✅ Health server started")
 
-start_health_server()
+USE_WEBHOOK = os.environ.get('USE_WEBHOOK', '0') in ('1','true','True')
+if not USE_WEBHOOK:
+    start_health_server()
 
 # === GOOGLE SHEETS (опционально) ===
 users_sheet = None
@@ -518,7 +520,23 @@ def main():
         print("✅ Бот запущен!")
         print("📊 Функции: История диалогов (15 сообщений), Сохранение интервью, Уведомления админа")
         
-        application.run_polling(drop_pending_updates=True)
+        if USE_WEBHOOK:
+            port = int(os.environ.get('PORT', '10000'))
+            base_url = os.environ.get('WEBHOOK_BASE_URL') or os.environ.get('RENDER_EXTERNAL_URL')
+            if not base_url:
+                raise RuntimeError('WEBHOOK_BASE_URL/RENDER_EXTERNAL_URL не задан')
+            url_path = f"webhook/{BOT_TOKEN}"
+            webhook_url = base_url.rstrip('/') + '/' + url_path
+            print(f"🌐 Webhook: {webhook_url} на порту {port}")
+            application.run_webhook(
+                listen='0.0.0.0',
+                port=port,
+                url_path=url_path,
+                webhook_url=webhook_url,
+                drop_pending_updates=True,
+            )
+        else:
+            application.run_polling(drop_pending_updates=True)
         
     except Exception as e:
         print(f"❌ Ошибка запуска: {e}")
