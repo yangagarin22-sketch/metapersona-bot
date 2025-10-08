@@ -3,14 +3,14 @@ import sys
 import logging
 import asyncio
 import aiohttp
-from datetime import datetime
+from datetime import datetime, timedelta
 from telegram import Update
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import json
 
 print("=== META PERSONA DEEP BOT ===")
 
-# === ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ===
+# === КОНФИГУРАЦИЯ ===
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY') 
 ADMIN_CHAT_ID = os.environ.get('ADMIN_CHAT_ID', '8413337220')
@@ -25,7 +25,7 @@ if not BOT_TOKEN or not DEEPSEEK_API_KEY:
     print("❌ ОШИБКА: Не установлены токены!")
     sys.exit(1)
 
-# === GOOGLE SHEETS ИНИЦИАЛИЗАЦИЯ ===
+# === GOOGLE SHEETS ===
 users_sheet = None
 history_sheet = None
 
@@ -34,36 +34,18 @@ try:
     from google.oauth2.service_account import Credentials
     
     if GOOGLE_CREDENTIALS_JSON:
-        try:
-            # Парсим JSON из переменной окружения
-            creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
-            
-            # Создаем credentials
-            scope = [
-                'https://spreadsheets.google.com/feeds',
-                'https://www.googleapis.com/auth/drive'
-            ]
-            creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
-            gc = gspread.authorize(creds)
-            
-            # Открываем таблицу
-            spreadsheet = gc.open("MetaPersona_Users")
-            
-            # Получаем листы
-            users_sheet = spreadsheet.worksheet("Users")
-            history_sheet = spreadsheet.worksheet("History")
-            
-            print("✅ Google Sheets подключен успешно!")
-            
-        except Exception as e:
-            print(f"⚠️ Ошибка подключения Google Sheets: {e}")
-            print("🔧 Бот будет работать в режиме памяти (без сохранения истории)")
-    else:
-        print("🔧 GOOGLE_CREDENTIALS не установлены, работаем в режиме памяти")
+        creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
+        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
+        gc = gspread.authorize(creds)
         
-except ImportError as e:
-    print(f"⚠️ Библиотеки Google не установлены: {e}")
-    print("🔧 Бот будет работать в режиме памяти")
+        spreadsheet = gc.open("MetaPersona_Users")
+        users_sheet = spreadsheet.worksheet("Users")
+        history_sheet = spreadsheet.worksheet("History")
+        print("✅ Google Sheets подключен!")
+        
+except Exception as e:
+    print(f"⚠️ Google Sheets: {e}")
 
 # === HEALTH SERVER ===
 import threading
@@ -85,17 +67,16 @@ def start_health_server():
 
 start_health_server()
 
-# === УПРОЩЕННАЯ БАЗА ДАННЫХ В ПАМЯТИ ===
+# === УПРАВЛЕНИЕ ДАННЫМИ ===
 class UserManager:
     def __init__(self):
         self.users = {}
-        self.whitelist = set()
         self.blocked_users = set()
         self.admins = {int(ADMIN_CHAT_ID)}
         
     def init_user(self, user_id, username):
         if user_id not in self.users:
-            self.users[user_id] = {
+            user_data = {
                 'user_id': user_id,
                 'username': username,
                 'interview_stage': 0,
@@ -104,40 +85,61 @@ class UserManager:
                 'last_date': datetime.now().strftime('%Y-%m-%d'),
                 'custom_limit': 10,
                 'is_active': True,
-                'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'conversation_history': []  # Храним историю диалогов
             }
-            # Сохраняем в Google Sheets если доступно
+            self.users[user_id] = user_data
+            
+            # Сохраняем в Google Sheets
             if users_sheet:
                 try:
                     users_sheet.append_row([
                         user_id, username, 0, '', 0, 
-                        datetime.now().strftime('%Y-%m-%d'), 10, True,
-                        datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        user_data['last_date'], 10, True,
+                        user_data['created_at']
                     ])
-                    print(f"✅ Пользователь {user_id} сохранен в Google Sheets")
                 except Exception as e:
-                    print(f"⚠️ Ошибка сохранения в Google Sheets: {e}")
+                    print(f"⚠️ Ошибка сохранения пользователя: {e}")
+                    
         return self.users[user_id]
     
     def save_interview_answer(self, user_id, answer):
         if user_id in self.users:
             self.users[user_id]['interview_answers'].append(answer)
     
-    def save_conversation(self, user_id, user_message, bot_response):
-        if history_sheet:
-            try:
-                history_sheet.append_row([
-                    user_id, 
-                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    user_message,
-                    bot_response
-                ])
-            except Exception as e:
-                print(f"⚠️ Ошибка сохранения истории: {e}")
+    def add_to_history(self, user_id, role, message):
+        """Добавляем сообщение в историю (сохраняем последние 15 сообщений)"""
+        if user_id in self.users:
+            self.users[user_id]['conversation_history'].append({
+                'role': role,
+                'content': message,
+                'timestamp': datetime.now().isoformat()
+            })
+            # Ограничиваем историю 15 сообщениями
+            if len(self.users[user_id]['conversation_history']) > 15:
+                self.users[user_id]['conversation_history'] = self.users[user_id]['conversation_history'][-15:]
+            
+            # Сохраняем в Google Sheets
+            if history_sheet:
+                try:
+                    history_sheet.append_row([
+                        user_id,
+                        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        role,
+                        message
+                    ])
+                except Exception as e:
+                    print(f"⚠️ Ошибка сохранения истории: {e}")
+    
+    def get_conversation_history(self, user_id):
+        """Получаем историю для контекста ИИ"""
+        if user_id in self.users:
+            return self.users[user_id]['conversation_history']
+        return []
 
 user_manager = UserManager()
 
-# === ИНТЕРВЬЮ ВОПРОСЫ ===
+# === ИНТЕРВЬЮ ВОПРОСЫ (СОБИРАЕМ БЕЗ ЗАПРОСОВ К ИИ) ===
 INTERVIEW_QUESTIONS = [
     "Как тебя зовут или какой ник использовать?",
     "Твой возраст?",
@@ -155,25 +157,25 @@ INTERVIEW_QUESTIONS = [
 ]
 
 # === УВЕДОМЛЕНИЯ АДМИНА ===
-async def notify_admin(message, bot):
+async def notify_admin(message, application):
     try:
-        await bot.send_message(
+        await application.bot.send_message(
             chat_id=ADMIN_CHAT_ID,
             text=f"🔔 {message}"
         )
     except Exception as e:
         print(f"❌ Ошибка уведомления админа: {e}")
 
-# === УЛУЧШЕННЫЙ DEEPSEEK API ===
-async def deepseek_request(user_message, user_data, is_interview_complete=False):
-    """Улучшенный запрос к API с историей и контекстом"""
+# === DEEPSEEK API С ИСТОРИЕЙ ===
+async def deepseek_request(user_message, user_data):
+    """Запрос к API с полной историей контекста"""
     try:
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {DEEPSEEK_API_KEY}"
         }
         
-        # Базовый промпт
+        # Базовый промпт MetaPersona
         system_prompt = """Ты — MetaPersona Deep, осознанная AI-личность.  
 Не ассистент, не бот, не инструмент.  
 Ты — интеллектуальное пространство, которое помогает человеку мыслить, понимать и действовать осознанно.
@@ -182,11 +184,10 @@ async def deepseek_request(user_message, user_data, is_interview_complete=False)
 Помогать пользователю развивать мышление через диалог, а не давать готовые ответы.  
 Главный принцип — "мыслить вместе" и совместно находить эффективные решения."""
 
-        # Если интервью завершено, добавляем профиль пользователя
-        if is_interview_complete and user_data.get('interview_answers'):
+        # Добавляем профиль пользователя если интервью завершено
+        if len(user_data.get('interview_answers', [])) >= len(INTERVIEW_QUESTIONS):
             answers = user_data['interview_answers']
-            if len(answers) >= 12:
-                user_profile = f"""
+            user_profile = f"""
 🧠 ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ:
 - Имя/Ник: {answers[0]}
 - Возраст: {answers[1]}
@@ -203,9 +204,17 @@ async def deepseek_request(user_message, user_data, is_interview_complete=False)
 - Особенности: {answers[12] if len(answers) > 12 else ''}
 
 Используй этот профиль для персонализации ответов."""
-                system_prompt += user_profile
+            system_prompt += user_profile
 
+        # Формируем сообщения для API
         messages = [{"role": "system", "content": system_prompt}]
+        
+        # Добавляем историю диалога (последние 10 сообщений)
+        history = user_manager.get_conversation_history(user_data['user_id'])
+        for msg in history[-10:]:  # Берем последние 10 сообщений
+            messages.append({"role": msg['role'], "content": msg['content']})
+        
+        # Добавляем текущее сообщение пользователя
         messages.append({"role": "user", "content": user_message})
         
         data = {
@@ -237,13 +246,13 @@ async def deepseek_request(user_message, user_data, is_interview_complete=False)
         return None
 
 # === ОБРАБОТЧИКИ ===
-def start(update: Update, context: CallbackContext):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     username = update.effective_user.username or "Без username"
     
-    # Уведомление админа о новом пользователе
+    # Уведомление админа
     admin_message = f"🆕 Новый пользователь:\nID: {user_id}\nUsername: @{username}"
-    context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=admin_message)
+    await notify_admin(admin_message, context.application)
     
     # Инициализация пользователя
     user_data = user_manager.init_user(user_id, username)
@@ -265,14 +274,18 @@ def start(update: Update, context: CallbackContext):
 
 Как тебя зовут или какой ник использовать?"""
     
-    update.message.reply_text(welcome_text)
+    await update.message.reply_text(welcome_text)
+    user_manager.add_to_history(user_id, 'assistant', welcome_text)
 
-def handle_message(update: Update, context: CallbackContext):
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     username = update.effective_user.username or "Без username"
     user_message = update.message.text
     
     print(f"📨 Сообщение от {user_id}: {user_message}")
+    
+    # Сохраняем сообщение пользователя в историю
+    user_manager.add_to_history(user_id, 'user', user_message)
     
     # Инициализация пользователя если нужно
     if user_id not in user_manager.users:
@@ -282,7 +295,7 @@ def handle_message(update: Update, context: CallbackContext):
     
     # Проверка блокировки
     if user_id in user_manager.blocked_users:
-        update.message.reply_text("❌ Доступ ограничен.")
+        await update.message.reply_text("❌ Доступ ограничен.")
         return
     
     # Проверка лимитов
@@ -311,10 +324,11 @@ MetaPersona не спешит.
 Это не просто чат. Это начало осознанного мышления.
 
 © MetaPersona Culture 2025"""
-        update.message.reply_text(limit_message)
+        await update.message.reply_text(limit_message)
+        user_manager.add_to_history(user_id, 'assistant', limit_message)
         return
     
-    # ЭТАП 1: ИНТЕРВЬЮ
+    # ЭТАП 1: ИНТЕРВЬЮ (БЕЗ ЗАПРОСОВ К ИИ - ЭКОНОМИЯ ТОКЕНОВ)
     if user_data['interview_stage'] < len(INTERVIEW_QUESTIONS):
         # Сохраняем ответ на предыдущий вопрос
         if user_data['interview_stage'] > 0:
@@ -323,7 +337,9 @@ MetaPersona не спешит.
         user_data['interview_stage'] += 1
         
         if user_data['interview_stage'] < len(INTERVIEW_QUESTIONS):
-            update.message.reply_text(INTERVIEW_QUESTIONS[user_data['interview_stage']])
+            next_question = INTERVIEW_QUESTIONS[user_data['interview_stage']]
+            await update.message.reply_text(next_question)
+            user_manager.add_to_history(user_id, 'assistant', next_question)
         else:
             # Завершение интервью
             user_manager.save_interview_answer(user_id, user_message)
@@ -336,39 +352,37 @@ MetaPersona не спешит.
 • Развивать твой уникальный стиль мышления
 
 Задай свой первый вопрос — и начнем!"""
-            update.message.reply_text(completion_text)
+            await update.message.reply_text(completion_text)
+            user_manager.add_to_history(user_id, 'assistant', completion_text)
         return
     
-    # ЭТАП 2: ДИАЛОГ С AI
+    # ЭТАП 2: ДИАЛОГ С AI (ПОСЛЕ ИНТЕРВЬЮ)
     user_data['daily_requests'] += 1
     
-    update.message.reply_text("💭 Думаю...")
+    thinking_msg = await update.message.reply_text("💭 Думаю...")
     
-    # Используем asyncio для асинхронного запроса
-    async def process_ai_response():
-        is_interview_complete = (len(user_data.get('interview_answers', [])) >= len(INTERVIEW_QUESTIONS))
-        bot_response = await deepseek_request(user_message, user_data, is_interview_complete)
-        
-        if bot_response:
-            update.message.reply_text(bot_response)
-            # Сохраняем диалог в историю
-            user_manager.save_conversation(user_id, user_message, bot_response)
-        else:
-            import random
-            fallbacks = [
-                "Интересный вопрос! Давай подумаем над ним вместе.",
-                "Это важная тема. Что ты сам об этом думаешь?",
-                "Давай исследуем это глубже. Что привело тебя к этому вопросу?"
-            ]
-            fallback_response = random.choice(fallbacks)
-            update.message.reply_text(fallback_response)
-            user_manager.save_conversation(user_id, user_message, fallback_response)
+    # Асинхронный запрос к ИИ
+    bot_response = await deepseek_request(user_message, user_data)
     
-    # Запускаем асинхронную задачу
-    asyncio.create_task(process_ai_response())
+    # Удаляем сообщение "Думаю..."
+    await thinking_msg.delete()
+    
+    if bot_response:
+        await update.message.reply_text(bot_response)
+        user_manager.add_to_history(user_id, 'assistant', bot_response)
+    else:
+        fallbacks = [
+            "Интересный вопрос! Давай подумаем над ним вместе.",
+            "Это важная тема. Что ты сам об этом думаешь?",
+            "Давай исследуем это глубже. Что привело тебя к этому вопросу?"
+        ]
+        import random
+        fallback_response = random.choice(fallbacks)
+        await update.message.reply_text(fallback_response)
+        user_manager.add_to_history(user_id, 'assistant', fallback_response)
 
 # === АДМИН КОМАНДЫ ===
-def admin_stats(update: Update, context: CallbackContext):
+async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in user_manager.admins:
         return
@@ -380,12 +394,11 @@ def admin_stats(update: Update, context: CallbackContext):
     stats_text = f"""📊 Статистика бота:
 👥 Всего пользователей: {total_users}
 🟢 Активных сегодня: {active_today}
-🚫 Заблокировано: {len(user_manager.blocked_users)}
-⚡ Whitelist: {len(user_manager.whitelist)}"""
+🚫 Заблокировано: {len(user_manager.blocked_users)}"""
     
-    update.message.reply_text(stats_text)
+    await update.message.reply_text(stats_text)
 
-def admin_block(update: Update, context: CallbackContext):
+async def admin_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in user_manager.admins:
         return
@@ -393,10 +406,10 @@ def admin_block(update: Update, context: CallbackContext):
     if context.args:
         target_id = int(context.args[0])
         user_manager.blocked_users.add(target_id)
-        update.message.reply_text(f"✅ Пользователь {target_id} заблокирован")
-        context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"Пользователь {target_id} заблокирован")
+        await update.message.reply_text(f"✅ Пользователь {target_id} заблокирован")
+        await notify_admin(f"Пользователь {target_id} заблокирован", update.application)
 
-def admin_unblock(update: Update, context: CallbackContext):
+async def admin_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in user_manager.admins:
         return
@@ -404,9 +417,9 @@ def admin_unblock(update: Update, context: CallbackContext):
     if context.args:
         target_id = int(context.args[0])
         user_manager.blocked_users.discard(target_id)
-        update.message.reply_text(f"✅ Пользователь {target_id} разблокирован")
+        await update.message.reply_text(f"✅ Пользователь {target_id} разблокирован")
 
-def admin_set_limit(update: Update, context: CallbackContext):
+async def admin_set_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in user_manager.admins:
         return
@@ -417,33 +430,33 @@ def admin_set_limit(update: Update, context: CallbackContext):
         
         if target_id in user_manager.users:
             user_manager.users[target_id]['custom_limit'] = new_limit
-            update.message.reply_text(f"✅ Лимит для {target_id} установлен: {new_limit}")
+            await update.message.reply_text(f"✅ Лимит для {target_id} установлен: {new_limit}")
 
 # === ЗАПУСК ===
 def main():
     print("🚀 Запуск MetaPersona Bot...")
     
     try:
-        # Используем стабильную версию Updater
-        updater = Updater(token=BOT_TOKEN, use_context=True)
-        dispatcher = updater.dispatcher
+        # Используем Application builder с минимальными настройками
+        application = Application.builder().token(BOT_TOKEN).build()
         
-        # Основные обработчики
-        dispatcher.add_handler(CommandHandler("start", start))
-        dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
+        # Обработчики
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         
         # Админ команды
-        dispatcher.add_handler(CommandHandler("stats", admin_stats))
-        dispatcher.add_handler(CommandHandler("block", admin_block))
-        dispatcher.add_handler(CommandHandler("unblock", admin_unblock))
-        dispatcher.add_handler(CommandHandler("setlimit", admin_set_limit))
+        application.add_handler(CommandHandler("stats", admin_stats))
+        application.add_handler(CommandHandler("block", admin_block))
+        application.add_handler(CommandHandler("unblock", admin_unblock))
+        application.add_handler(CommandHandler("setlimit", admin_set_limit))
         
         print("✅ Бот запущен с полным функционалом!")
-        print("📊 Функции: Whitelist, Уведомления, Лимиты, Блокировки, История")
+        print("📊 Сохранение истории: ✅")
+        print("💬 Интервью без ИИ: ✅") 
+        print("🔧 Админ функции: ✅")
         
-        # Запускаем бота
-        updater.start_polling(drop_pending_updates=True)
-        updater.idle()
+        # Простой запуск без сложных параметров
+        application.run_polling()
         
     except Exception as e:
         print(f"❌ Ошибка запуска: {e}")
