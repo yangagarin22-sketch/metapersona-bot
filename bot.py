@@ -7,6 +7,7 @@ import json
 from datetime import datetime
 from telegram import Update
 from telegram import __version__ as tg_version
+import telegram.ext as tg_ext
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 print("=== META PERSONA DEEP BOT ===")
@@ -21,6 +22,7 @@ WHITELIST_IDS = set(
 )
 
 print(f"PTB: {tg_version}")
+print(f"PTB ext module: {tg_ext.__file__}")
 print(f"BOT_TOKEN: {'✅' if BOT_TOKEN else '❌'}")
 print(f"DEEPSEEK_API_KEY: {'✅' if DEEPSEEK_API_KEY else '❌'}")
 print(f"ADMIN_CHAT_ID: {ADMIN_CHAT_ID}")
