@@ -40,7 +40,7 @@ def start_health_server():
 
 start_health_server()
 
-# === БАЗА ДАННЫХ С ИСТОРИЕЙ ===
+# === БАЗА ДАННЫХ ===
 user_states = {}
 
 # === ИНТЕРВЬЮ ВОПРОСЫ ===
@@ -60,7 +60,7 @@ INTERVIEW_QUESTIONS = [
     "Что важно учесть мне, чтобы поддерживать тебя эффективно?"
 ]
 
-# === DEEPSEEK API С ИСТОРИЕЙ ===
+# === DEEPSEEK API ===
 async def deepseek_request(user_message, user_history=None):
     try:
         headers = {
@@ -72,7 +72,7 @@ async def deepseek_request(user_message, user_history=None):
         
         # Добавляем историю если есть
         if user_history:
-            messages.extend(user_history[-5:])  # Последние 5 сообщений
+            messages.extend(user_history[-10:])  # Последние 10 сообщений
         
         messages.append({"role": "user", "content": user_message})
         
@@ -96,6 +96,7 @@ async def deepseek_request(user_message, user_history=None):
                     result = await response.json()
                     return result['choices'][0]['message']['content']
                 else:
+                    print(f"❌ API ошибка {response.status}")
                     return None
                     
     except Exception as e:
@@ -135,6 +136,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 Как тебя зовут или какой ник использовать?"""
     
     await update.message.reply_text(welcome_text)
+    user_states[user_id]['conversation_history'].append({"role": "assistant", "content": welcome_text})
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -158,13 +160,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state['last_date'] = today
     
     if state['daily_requests'] >= 10:
-        await update.message.reply_text(
-            "🧠 На сегодня диалог завершён. Лимит: 10 вопросов в день.\n\n"
-            "Создай свою MetaPersona: 🔗 https://taplink.cc/metapersona"
-        )
+        limit_message = """🧠 На сегодня диалог завершён. Лимит: 10 вопросов в день.
+
+MetaPersona не спешит.
+Мы тренируем не скорость — а глубину мышления.
+
+Но если ты чувствуешь, что этот формат тебе подходит,
+и хочешь перейти на следующий уровень —
+там, где нет ограничений,
+
+🔗 Создай свою MetaPersona сейчас: https://taplink.cc/metapersona
+
+15 минут настройки — и ты запустишь свою AI-личность,
+которая знает твой стиль мышления, цели и внутренний ритм.
+
+Это не просто чат. Это начало осознанного мышления.
+
+© MetaPersona Culture 2025"""
+        await update.message.reply_text(limit_message)
+        state['conversation_history'].append({"role": "assistant", "content": limit_message})
         return
     
-    # ЭТАП 1: ИНТЕРВЬЮ (СОХРАНЯЕМ ОТВЕТЫ)
+    # ЭТАП 1: ИНТЕРВЬЮ (БЕЗ ЗАПРОСОВ К ИИ)
     if state['interview_stage'] < len(INTERVIEW_QUESTIONS):
         # Сохраняем ответ на предыдущий вопрос
         if state['interview_stage'] > 0:
@@ -175,12 +192,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if state['interview_stage'] < len(INTERVIEW_QUESTIONS):
             next_question = INTERVIEW_QUESTIONS[state['interview_stage']]
             await update.message.reply_text(next_question)
-            # Сохраняем вопрос в историю
             state['conversation_history'].append({"role": "assistant", "content": next_question})
         else:
             # Завершение интервью
             state['interview_answers'].append(user_message)
-            completion_text = "🎉 Отлично! Теперь я понимаю твой стиль мышления.\n\nЗадай свой вопрос!"
+            completion_text = """🎉 Отлично! Теперь я понимаю твой стиль мышления.
+
+Теперь я буду помогать тебе:
+• Видеть глубинную структуру мыслей
+• Находить неочевидные решения  
+• Двигаться к целям осознанно
+• Развивать твой уникальный стиль мышления
+
+Задай свой первый вопрос — и начнем!"""
             await update.message.reply_text(completion_text)
             state['conversation_history'].append({"role": "assistant", "content": completion_text})
         return
@@ -190,7 +214,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text("💭 Думаю...")
     
-    # Используем историю для контекста
+    # Используем историю для контекста ИИ
     bot_response = await deepseek_request(user_message, state['conversation_history'])
     
     if bot_response:
@@ -223,7 +247,7 @@ def main():
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         
         print("✅ Бот запущен!")
-        print("📊 Функции: История диалогов, Сохранение интервью, Уведомления админа")
+        print("📊 Функции: История диалогов (15 сообщений), Сохранение интервью, Уведомления админа")
         
         application.run_polling(
             drop_pending_updates=True,
