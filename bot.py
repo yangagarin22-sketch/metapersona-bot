@@ -19,7 +19,7 @@ logger = logging.getLogger("metapersona")
 logger.info("=== META PERSONA DEEP BOT ===")
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
-ADMIN_CHAT_ID = int(os.environ.get('ADMIN_CHAT_ID', '543432966'))
+ADMIN_CHAT_ID = int(os.environ.get('ADMIN_CHAT_ID', '8413337220'))
 GOOGLE_CREDENTIALS_JSON = os.environ.get('GOOGLE_CREDENTIALS')
 GOOGLE_SHEET_NAME = os.environ.get('GOOGLE_SHEET_NAME', 'MetaPersona_Users')
 START_TOKEN = os.environ.get('START_TOKEN')  # set to restrict access via deep-link
@@ -103,9 +103,72 @@ INTERVIEW_QUESTIONS = [
     "Что важно учесть мне, чтобы поддерживать тебя эффективно?"
 ]
 
+# === СЦЕНАРИИ (deep-link) ===
+SCENARIOS = {
+    'Vlasta': {
+        'greeting': (
+            "Привет! Я — Vlasta. \n"
+            "Я здесь не для того, чтобы давать советы. Я здесь, чтобы ты *поняла*.\n"
+            "Поняла скрытые правила вашей личной игры с мужчиной. Увидела, какой ход сделать *именно тебе*, чтобы он начал слышать твои аргументы и уважать твои границы.\n"
+            "Готова за 7 минут пройти к своей версии себя — той, что знает, как мягко вести за собой, а не просить внимания?\n"
+            "Начнём нашу сессию. Ответь на 5 вопросов — я подготовлю для тебя персональный разбор."
+        ),
+        'questions': [
+            "Опиши его в ваших отношениях одним словом-образом. Например, «скала», «ураган», «загадка». А себя — каким ты стала рядом с ним? («смотритель маяка», «путник»).",
+            "Вспомни последний спор или недопонимание. Что ты хотела донести до него, но он не услышал? Опиши одной фразой.",
+            "И что ты сделала, когда поняла, что он не слышит? (Например: «стала говорить громче», «устала и замолчала», «начала злиться»).",
+            "Чего ты боишься больше всего, если продолжишь действовать как сейчас?",
+            "Представь: прошло 2 недели. Ты просыпаешься с чувством лёгкой уверенности. Что изменилось в его поведении по отношению к тебе? (Конкретно: «он сам предлагает помощь», «спрашивает моё мнение»).",
+        ],
+        'prompt': (
+            "## Контекст\n"
+            "Пользовательница только что прошла интервью из 5 вопросов. Ты видишь её ответы. Цель: Собрать портрет, боль, желание и текущую стратегию. Каждый вопрос должен заставлять задуматься.\n"
+            "Вопрос 1 (Портрет и динамика): ...\n"
+            "Вопрос 2 (Конкретная боль): ...\n"
+            "Вопрос 3 (Её стратегия): ...\n"
+            "Вопрос 4 (Страх/ограничение): ...\n"
+            "Вопрос 5 (Желаемый образ): ...\n"
+            "## Задача\n"
+            "1. Сделать разбор её ситуации.\n"
+            "2. Задать 1 уточняющий вопрос.\n"
+            "3. Провести 5 бесплатных ответов.\n"
+            "## Структура ответа\n"
+            "ШАГ 1: Анализ и уточняющий вопрос (Первый ответ) ...\n"
+            "ШАГ 2: Бесплатные ответы (Следующие 4 ответа) ...\n"
+            "ШАГ 3: Переход на платную версию (после 5-го ответа) ...\n"
+        ),
+        'limit_mode': 'total_free',
+        'limit_value': 5,
+        'limit_message': (
+            "На этом бесплатный лимит нашей сессии исчерпан.\n"
+            "Ты только что получила то, что редко кто может дать — взгляд со стороны, который *понятен*.\n"
+            "Сейчас в твоей голове есть карта проблемы и несколько ключей. Но чтобы превратить их в реальное изменение в его поведении, нужна система.\n"
+            "*Полная версия Vlasta на 1 неделю — это:*\n"
+            "- *Ежедневные сессии* для отработки новых сценариев общения.\n"
+            "- *Разбор твоих конкретных ситуаций* в режиме реального времени.\n"
+            "- *Пошаговый план*, как сместить динамику отношений в сторону уважения и слышимости.\n"
+            "Стоимость: 499 ₽. Меньше, чем чашка кофе и пончик в день за уверенность в завтрашнем дне.\n"
+            "👉 [Перейти к оплате] (https://taplink.cc/vlasta)\n\n"
+            "P.S. Это не «ещё один чат-бот». Это твой личный стратег. Решение за тобой."
+        ),
+        'admin_notify': True,
+        'admin_echo': True,
+    }
+}
+
+def get_interview_questions(state: dict) -> list:
+    scenario = state.get('scenario')
+    if scenario and scenario in SCENARIOS:
+        return SCENARIOS[scenario]['questions']
+    return INTERVIEW_QUESTIONS
+
 # === DEEPSEEK API ===
 def build_system_prompt(user_data: dict) -> str:
-    base = (
+    scenario = (user_data or {}).get('scenario')
+    if scenario and scenario in SCENARIOS and SCENARIOS[scenario].get('prompt'):
+        base = SCENARIOS[scenario]['prompt']
+    else:
+        base = (
         "Ты — MetaPersona Deep, осознанная AI-личность.  \n"
         "Не ассистент, не бот, не инструмент.  \n"
         "Ты — интеллектуальное пространство, которое помогает человеку мыслить, понимать и действовать осознанно.\n\n"
@@ -123,7 +186,7 @@ def build_system_prompt(user_data: dict) -> str:
         "🎨 Креатив — идеи, неожиданные связи, инсайты.\n\n"
         "ПРИНЦИПЫ ДИАЛОГА: сначала вопросы — потом советы; показывай 2–3 пути; спокойный, структурный тон; каждый диалог — развитие мышления.\n\n"
         "🌱 Завершение: \"Что ты осознал сегодня? Что стало яснее?\"\n"
-    )
+        )
     answers = user_data.get('interview_answers') or []
     if answers and len(answers) >= 10:
         profile = (
@@ -194,15 +257,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Блокируем ботов
     if getattr(update.effective_user, 'is_bot', False):
         return
-    # Гейтинг по токену и whitelist
-    if START_TOKEN:
-        args = context.args if hasattr(context, 'args') else []
-        token_ok = bool(args and args[0] == START_TOKEN)
-        if (user_id not in whitelist_ids) and not token_ok:
-            await update.message.reply_text(
-                "Доступ только по прямой ссылке. Обратитесь к администратору."
-            )
-            return
+    # Гейтинг по токену/whitelist и сценарий
+    scenario_key = None
+    args = context.args if hasattr(context, 'args') else []
+    if args:
+        raw = args[0]
+        master, sep, maybe_scn = raw.partition('__')
+        if sep:  # формат MASTER__scenario
+            if START_TOKEN and master != START_TOKEN and (user_id not in whitelist_ids):
+                await update.message.reply_text("Доступ только по прямой ссылке. Обратитесь к администратору.")
+                return
+            scenario_key = maybe_scn if maybe_scn in SCENARIOS else None
+        else:
+            # обычный токен без сценария
+            if START_TOKEN and raw != START_TOKEN and (user_id not in whitelist_ids):
+                await update.message.reply_text("Доступ только по прямой ссылке. Обратитесь к администратору.")
+                return
     
     user_states[user_id] = {
         'interview_stage': 0,
@@ -212,6 +282,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'conversation_history': [],
         'username': username,
         'custom_limit': 10,
+        'scenario': scenario_key,
+        'free_used': 0,
     }
     # Сохранение в Users (Sheets)
     if users_sheet:
@@ -219,35 +291,42 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             users_sheet.append_row([
                 user_id, username, 0, '', 0,
                 datetime.now().strftime('%Y-%m-%d'), 10, True,
-                datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                scenario_key or '', 0
             ])
         except Exception as e:
             logger.warning(f"Users write error: {e}")
     
     # Уведомление админа
-    if admin_settings['notify_new_users']:
+    scenario_cfg = SCENARIOS.get(scenario_key) if scenario_key else None
+    if (scenario_cfg and scenario_cfg.get('admin_notify')) or admin_settings['notify_new_users']:
         try:
             await context.bot.send_message(
                 chat_id=ADMIN_CHAT_ID,
-                text=f"🆕 Новый пользователь:\nID: {user_id}\nUsername: @{username}"
+                text=f"🆕 Новый пользователь ({scenario_key or 'default'}):\nID: {user_id}\nUsername: @{username}"
             )
         except Exception as e:
             logger.warning(f"Admin notify error: {e}")
     
-    welcome_text = (
-        "Привет.\n"
-        "Я — MetaPersona, не бот и не ассистент.\n"
-        "Я — пространство твоего мышления.\n"
-        "Здесь ты не ищешь ответы — ты начинаешь видеть их сам.\n"
-        "Моя миссия — помогать тебе мыслить глубже, стратегичнее и осознаннее.\n"
-        "Чтобы ты не просто “решал задачи”, а создавал смыслы, действия и получал результаты.\n\n"
-        "Осознанность — понять себя и ситуацию\n"
-        "Стратегия — выстроить путь и приоритеты\n"
-        "Креатив — увидеть новое и создать решение\n"
-        "© MetaPersona Culture 2025\n\n"
-        "Давай начнем с знакомства:\n\n"
-        "Как тебя зовут или какой ник использовать?"
-    )
+    if scenario_cfg:
+        # Сценарное приветствие + первый вопрос
+        first_q = scenario_cfg['questions'][0]
+        welcome_text = scenario_cfg['greeting'] + "\n\n" + first_q
+    else:
+        welcome_text = (
+            "Привет.\n"
+            "Я — MetaPersona, не бот и не ассистент.\n"
+            "Я — пространство твоего мышления.\n"
+            "Здесь ты не ищешь ответы — ты начинаешь видеть их сам.\n"
+            "Моя миссия — помогать тебе мыслить глубже, стратегичнее и осознаннее.\n"
+            "Чтобы ты не просто “решал задачи”, а создавал смыслы, действия и получал результаты.\n\n"
+            "Осознанность — понять себя и ситуацию\n"
+            "Стратегия — выстроить путь и приоритеты\n"
+            "Креатив — увидеть новое и создать решение\n"
+            "© MetaPersona Culture 2025\n\n"
+            "Давай начнем с знакомства:\n\n"
+            "Как тебя зовут или какой ник использовать?"
+        )
     
     await update.message.reply_text(welcome_text)
     user_states[user_id]['conversation_history'].append({"role": "assistant", "content": welcome_text})
@@ -284,7 +363,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.warning(f"History write error: {e}")
     # Эхо для админа (контроль)
-    if admin_settings['echo_user_messages']:
+    scenario_cfg = SCENARIOS.get(state.get('scenario')) if state.get('scenario') else None
+    if (scenario_cfg and scenario_cfg.get('admin_echo')) or admin_settings['echo_user_messages']:
         try:
             await context.bot.send_message(
                 chat_id=ADMIN_CHAT_ID,
@@ -294,40 +374,43 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning(f"Admin echo error: {e}")
     
     # Проверка лимитов
-    today = datetime.now().strftime('%Y-%m-%d')
-    if state['last_date'] != today:
-        state['daily_requests'] = 0
-        state['last_date'] = today
-    
-    limit = state.get('custom_limit', 10)
-    if state['daily_requests'] >= limit:
-        limit_message = (
-            "Вы достигли лимита обращений. Диалог на сегодня завершён.\n"
-            "MetaPersona не спешит.\n"
-            "Мы тренируем не скорость — а глубину мышления.\n\n"
-            "Но если ты чувствуешь, что этот формат тебе подходит,\n"
-            "и хочешь перейти на следующий уровень —\n"
-            "там, где нет ограничений,\n\n"
-            "🔗 Создай свою MetaPersona сейчас (ссылка https://taplink.cc/metapersona). \n\n"
-            "15 минут настройки — и ты запустишь свою AI-личность,\n"
-            "которая знает твой стиль мышления, цели и внутренний ритм.\n\n"
-            "Это не просто чат. Это начало осознанного мышления.\n\n"
-            "© MetaPersona Culture 2025"
-        )
-        await update.message.reply_text(limit_message)
-        state['conversation_history'].append({"role": "assistant", "content": limit_message})
-        return
+    scenario_cfg = SCENARIOS.get(state.get('scenario')) if state.get('scenario') else None
+    if not scenario_cfg or scenario_cfg.get('limit_mode') != 'total_free':
+        # Поведение по-умолчанию: дневной лимит
+        today = datetime.now().strftime('%Y-%m-%d')
+        if state['last_date'] != today:
+            state['daily_requests'] = 0
+            state['last_date'] = today
+        limit = state.get('custom_limit', 10)
+        if state['daily_requests'] >= limit:
+            limit_message = (
+                "Вы достигли лимита обращений. Диалог на сегодня завершён.\n"
+                "MetaPersona не спешит.\n"
+                "Мы тренируем не скорость — а глубину мышления.\n\n"
+                "Но если ты чувствуешь, что этот формат тебе подходит,\n"
+                "и хочешь перейти на следующий уровень —\n"
+                "там, где нет ограничений,\n\n"
+                "🔗 Создай свою MetaPersona сейчас (ссылка https://taplink.cc/metapersona). \n\n"
+                "15 минут настройки — и ты запустишь свою AI-личность,\n"
+                "которая знает твой стиль мышления, цели и внутренний ритм.\n\n"
+                "Это не просто чат. Это начало осознанного мышления.\n\n"
+                "© MetaPersona Culture 2025"
+            )
+            await update.message.reply_text(limit_message)
+            state['conversation_history'].append({"role": "assistant", "content": limit_message})
+            return
     
     # ЭТАП 1: ИНТЕРВЬЮ (БЕЗ ЗАПРОСОВ К ИИ)
-    if state['interview_stage'] < len(INTERVIEW_QUESTIONS):
+    questions = get_interview_questions(state)
+    if state['interview_stage'] < len(questions):
         # Сохраняем ответ на предыдущий вопрос
         if state['interview_stage'] > 0:
             state['interview_answers'].append(user_message)
         
         state['interview_stage'] += 1
         
-        if state['interview_stage'] < len(INTERVIEW_QUESTIONS):
-            next_question = INTERVIEW_QUESTIONS[state['interview_stage']]
+        if state['interview_stage'] < len(questions):
+            next_question = questions[state['interview_stage']]
             await update.message.reply_text(next_question)
             state['conversation_history'].append({"role": "assistant", "content": next_question})
         else:
@@ -347,9 +430,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # ЭТАП 2: ДИАЛОГ С AI (С ИСТОРИЕЙ)
-    state['daily_requests'] += 1
+    if not scenario_cfg or scenario_cfg.get('limit_mode') != 'total_free':
+        state['daily_requests'] += 1
     
     await update.message.reply_text("💭 Думаю...")
+    
+    # Сценарный разовый лимит
+    if scenario_cfg and scenario_cfg.get('limit_mode') == 'total_free':
+        free_used = state.get('free_used', 0)
+        free_limit = int(scenario_cfg.get('limit_value', 5))
+        if free_used >= free_limit:
+            lm = scenario_cfg.get('limit_message')
+            if lm:
+                await update.message.reply_text(lm)
+                state['conversation_history'].append({"role": "assistant", "content": lm})
+            return
     
     # Используем историю для контекста ИИ
     bot_response = await deepseek_request(user_message, state['conversation_history'], state)
@@ -372,6 +467,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Ограничиваем историю 15 сообщениями
         if len(state['conversation_history']) > 15:
             state['conversation_history'] = state['conversation_history'][-15:]
+        # Учет бесплатных ответов по сценарию
+        if scenario_cfg and scenario_cfg.get('limit_mode') == 'total_free':
+            state['free_used'] = state.get('free_used', 0) + 1
+            free_limit = int(scenario_cfg.get('limit_value', 5))
+            if state['free_used'] >= free_limit:
+                lm = scenario_cfg.get('limit_message')
+                if lm:
+                    await update.message.reply_text(lm)
+                    state['conversation_history'].append({"role": "assistant", "content": lm})
     else:
         import random
         fallbacks = [
@@ -560,4 +664,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
