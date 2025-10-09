@@ -19,7 +19,7 @@ logger = logging.getLogger("metapersona")
 logger.info("=== META PERSONA DEEP BOT ===")
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
-ADMIN_CHAT_ID = int(os.environ.get('ADMIN_CHAT_ID', '8413337220'))
+ADMIN_CHAT_ID = int(os.environ.get('ADMIN_CHAT_ID', '543432966'))
 GOOGLE_CREDENTIALS_JSON = os.environ.get('GOOGLE_CREDENTIALS')
 GOOGLE_SHEET_NAME = os.environ.get('GOOGLE_SHEET_NAME', 'MetaPersona_Users')
 START_TOKEN = os.environ.get('START_TOKEN')  # set to restrict access via deep-link
@@ -560,3 +560,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
