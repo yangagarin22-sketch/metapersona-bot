@@ -25,6 +25,7 @@ ADMIN_CHAT_ID = int(os.environ.get('ADMIN_CHAT_ID', '8413337220'))
 GOOGLE_CREDENTIALS_JSON = os.environ.get('GOOGLE_CREDENTIALS')
 GOOGLE_SHEET_NAME = os.environ.get('GOOGLE_SHEET_NAME', 'MetaPersona_Users')
 START_TOKEN = os.environ.get('START_TOKEN')  # set to restrict access via deep-link
+WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET')  # optional secret for short webhook
 WHITELIST_IDS = set(
     int(x) for x in os.environ.get('WHITELIST_IDS', '').split(',') if x.strip().isdigit()
 )
@@ -910,18 +911,34 @@ def main():
         async def handle_health(request: web.Request):
             return web.Response(text='OK')
 
-        async def handle_tg(request: web.Request):
-            data = await request.json()
+        async def _process_update_payload(data: dict):
             try:
-                logger.info("Webhook hit: received update")
                 upd = Update.de_json(data, application.bot)
                 await application.process_update(upd)
             except Exception as e:
                 logger.exception(f"Update processing error: {e}")
+
+        async def handle_tg(request: web.Request):
+            data = await request.json()
+            logger.info("Webhook hit: received update (token path)")
+            await _process_update_payload(data)
+            return web.Response(text='OK')
+
+        async def handle_tg_short(request: web.Request):
+            # Validate secret token if configured
+            if WEBHOOK_SECRET:
+                got = request.headers.get('X-Telegram-Bot-Api-Secret-Token')
+                if got != WEBHOOK_SECRET:
+                    logger.warning("Webhook short path: invalid secret token")
+                    return web.Response(status=403, text='Forbidden')
+            data = await request.json()
+            logger.info("Webhook hit: received update (short path)")
+            await _process_update_payload(data)
             return web.Response(text='OK')
 
         aio.router.add_get('/health', handle_health)
-        aio.router.add_post(url_path, handle_tg)
+        aio.router.add_post(url_path, handle_tg)          # token path
+        aio.router.add_post('/webhook', handle_tg_short)   # short alias path
 
         # Start app and webhook
         await application.initialize()
@@ -931,7 +948,13 @@ def main():
         site = web.TCPSite(runner, '0.0.0.0', port)
         await site.start()
         logger.info('Aiohttp server started')
-        await application.bot.set_webhook(webhook_url, drop_pending_updates=False, allowed_updates=Update.ALL_TYPES)
+        # Prefer short path with secret if configured; fallback to token path
+        if WEBHOOK_SECRET:
+            short_url = base_url.rstrip('/') + '/webhook'
+            await application.bot.set_webhook(short_url, secret_token=WEBHOOK_SECRET, drop_pending_updates=False, allowed_updates=Update.ALL_TYPES)
+            logger.info(f"Webhook set to short path with secret: {short_url}")
+        else:
+            await application.bot.set_webhook(webhook_url, drop_pending_updates=False, allowed_updates=Update.ALL_TYPES)
         # Graceful stop support
         stop_event = asyncio.Event()
 
