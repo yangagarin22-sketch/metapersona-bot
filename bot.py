@@ -996,7 +996,8 @@ def main():
         logger.info('Aiohttp server started')
         # Prefer short path with secret if configured; fallback to token path; don't crash on failure
         short_url = base_url.rstrip('/') + '/webhook'
-        heal_expected_url = None
+        # default expected url
+        heal_expected_url = short_url if WEBHOOK_SECRET else webhook_url
         try:
             if WEBHOOK_SECRET:
                 await application.bot.set_webhook(short_url, secret_token=WEBHOOK_SECRET, drop_pending_updates=False, allowed_updates=Update.ALL_TYPES)
@@ -1035,6 +1036,7 @@ def main():
 
         # Background self-heal task
         async def webhook_self_heal():
+            nonlocal heal_expected_url
             interval = int(os.environ.get('WEBHOOK_HEALTH_INTERVAL_SECS', '60'))
             while True:
                 try:
