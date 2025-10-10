@@ -994,13 +994,27 @@ def main():
         site = web.TCPSite(runner, '0.0.0.0', port)
         await site.start()
         logger.info('Aiohttp server started')
-        # Prefer short path with secret if configured; fallback to token path
-        if WEBHOOK_SECRET:
-            short_url = base_url.rstrip('/') + '/webhook'
-            await application.bot.set_webhook(short_url, secret_token=WEBHOOK_SECRET, drop_pending_updates=False, allowed_updates=Update.ALL_TYPES)
-            logger.info(f"Webhook set to short path with secret: {short_url}")
-        else:
-            await application.bot.set_webhook(webhook_url, drop_pending_updates=False, allowed_updates=Update.ALL_TYPES)
+        # Prefer short path with secret if configured; fallback to token path; don't crash on failure
+        short_url = base_url.rstrip('/') + '/webhook'
+        heal_expected_url = None
+        try:
+            if WEBHOOK_SECRET:
+                await application.bot.set_webhook(short_url, secret_token=WEBHOOK_SECRET, drop_pending_updates=False, allowed_updates=Update.ALL_TYPES)
+                heal_expected_url = short_url
+                logger.info(f"Webhook set to short path with secret: {short_url}")
+            else:
+                await application.bot.set_webhook(webhook_url, drop_pending_updates=False, allowed_updates=Update.ALL_TYPES)
+                heal_expected_url = webhook_url
+                logger.info(f"Webhook set to token path: {webhook_url}")
+        except Exception as e:
+            logger.warning(f"Initial set_webhook failed: {e}")
+            try:
+                await application.bot.set_webhook(webhook_url, drop_pending_updates=False, allowed_updates=Update.ALL_TYPES)
+                heal_expected_url = webhook_url
+                logger.info(f"Webhook fallback to token path: {webhook_url}")
+            except Exception as e2:
+                logger.warning(f"Fallback set_webhook failed: {e2}")
+                heal_expected_url = webhook_url
         # Graceful stop support
         stop_event = asyncio.Event()
 
@@ -1019,6 +1033,33 @@ def main():
             # Signals not available (e.g., on Windows) — ignore
             pass
 
+        # Background self-heal task
+        async def webhook_self_heal():
+            interval = int(os.environ.get('WEBHOOK_HEALTH_INTERVAL_SECS', '60'))
+            while True:
+                try:
+                    await asyncio.sleep(interval)
+                    info = await application.bot.get_webhook_info()
+                    expected = heal_expected_url or (short_url if WEBHOOK_SECRET else webhook_url)
+                    if not info.url or info.url != expected:
+                        try:
+                            if WEBHOOK_SECRET:
+                                await application.bot.set_webhook(short_url, secret_token=WEBHOOK_SECRET, drop_pending_updates=False, allowed_updates=Update.ALL_TYPES)
+                                logger.info("Webhook self-healed to short path")
+                                heal_expected_url = short_url
+                            else:
+                                await application.bot.set_webhook(webhook_url, drop_pending_updates=False, allowed_updates=Update.ALL_TYPES)
+                                logger.info("Webhook self-healed to token path")
+                                heal_expected_url = webhook_url
+                        except Exception as se:
+                            logger.warning(f"Webhook self-heal error: {se}")
+                except asyncio.CancelledError:
+                    break
+                except Exception as he:
+                    logger.warning(f"Webhook health loop error: {he}")
+
+        heal_task = asyncio.create_task(webhook_self_heal())
+
         try:
             await stop_event.wait()
         finally:
@@ -1033,6 +1074,11 @@ def main():
                     logger.info(f"States flushed: {len(user_states)}")
                 except Exception as e:
                     logger.warning(f"States flush error: {e}")
+            try:
+                heal_task.cancel()
+                await heal_task
+            except Exception:
+                pass
             await application.stop()
             await application.shutdown()
             await runner.cleanup()
