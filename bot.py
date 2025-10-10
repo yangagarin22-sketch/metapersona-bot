@@ -662,7 +662,7 @@ def main():
         site = web.TCPSite(runner, '0.0.0.0', port)
         await site.start()
         logger.info('Aiohttp server started')
-        await application.bot.set_webhook(webhook_url, drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
+        await application.bot.set_webhook(webhook_url, drop_pending_updates=False, allowed_updates=Update.ALL_TYPES)
         try:
             # Sleep forever
             await asyncio.Event().wait()
