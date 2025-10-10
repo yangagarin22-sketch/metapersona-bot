@@ -81,6 +81,14 @@ if GOOGLE_CREDENTIALS_JSON:
         except Exception:
             states_sheet = ss.add_worksheet(title='States', rows=5000, cols=10)
             states_sheet.append_row(['user_id','state_json','updated_at','last_activity_at'])
+        # Ensure States header is correct (non-destructive)
+        try:
+            s_headers = states_sheet.row_values(1)
+            needed = ['user_id','state_json','updated_at','last_activity_at']
+            if s_headers != needed:
+                states_sheet.update('A1:D1', [needed])
+        except Exception:
+            pass
         logger.info('Google Sheets connected')
     except Exception as e:
         logger.warning(f"Google Sheets error: {e}")
@@ -104,12 +112,13 @@ class SheetsPersistence:
         self.user_row_cache: dict[int, int] = {}
         self.last_saved_at: dict[int, float] = {}
         self.debounce_secs: float = float(os.environ.get('SAVE_DEBOUNCE_SECS', '5'))
+        self.expected_headers = ['user_id','state_json','updated_at','last_activity_at']
 
     def _ensure_cache(self):
         if not self.sheet:
             return
         try:
-            records = self.sheet.get_all_records()
+            records = self.sheet.get_all_records(expected_headers=self.expected_headers)
             self.user_row_cache.clear()
             # rows start at 2 (row 1 is header)
             for idx, rec in enumerate(records, start=2):
@@ -127,7 +136,7 @@ class SheetsPersistence:
         if not self.sheet:
             return data
         try:
-            records = self.sheet.get_all_records()
+            records = self.sheet.get_all_records(expected_headers=self.expected_headers)
             for rec in records:
                 uid = rec.get('user_id')
                 state_json = rec.get('state_json')
@@ -184,7 +193,7 @@ class SheetsPersistence:
             return 0
         removed = 0
         try:
-            records = self.sheet.get_all_records()
+            records = self.sheet.get_all_records(expected_headers=self.expected_headers)
             # iterate from bottom to top to delete rows safely
             for idx in range(len(records), 0, -1):
                 rec = records[idx-1]
