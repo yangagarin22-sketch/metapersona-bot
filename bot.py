@@ -45,6 +45,7 @@ from aiohttp import web
 # === GOOGLE SHEETS (опционально) ===
 users_sheet = None
 history_sheet = None
+states_sheet = None
 if GOOGLE_CREDENTIALS_JSON:
     try:
         import gspread
@@ -70,12 +71,18 @@ if GOOGLE_CREDENTIALS_JSON:
             history_sheet = ss.worksheet('History')
         except Exception:
             history_sheet = ss.add_worksheet(title='History', rows=5000, cols=10)
-            history_sheet.append_row(['user_id','timestamp','role','message'])
+            history_sheet.append_row(['user_id','scenario','timestamp','role','message','free_used','daily_requests','interview_stage'])
+        try:
+            states_sheet = ss.worksheet('States')
+        except Exception:
+            states_sheet = ss.add_worksheet(title='States', rows=5000, cols=10)
+            states_sheet.append_row(['user_id','state_json','updated_at','last_activity_at'])
         logger.info('Google Sheets connected')
     except Exception as e:
         logger.warning(f"Google Sheets error: {e}")
         users_sheet = None
         history_sheet = None
+        states_sheet = None
 
 # === СОСТОЯНИЕ ПРИЛОЖЕНИЯ ===
 user_states = {}
@@ -85,6 +92,113 @@ admin_settings = {
     'notify_new_users': True,
     'echo_user_messages': False,
 }
+
+# === PERSISTENCE (Sheets) ===
+class SheetsPersistence:
+    def __init__(self, sheet):
+        self.sheet = sheet
+        self.user_row_cache: dict[int, int] = {}
+        self.last_saved_at: dict[int, float] = {}
+        self.debounce_secs: float = float(os.environ.get('SAVE_DEBOUNCE_SECS', '5'))
+
+    def _ensure_cache(self):
+        if not self.sheet:
+            return
+        try:
+            records = self.sheet.get_all_records()
+            self.user_row_cache.clear()
+            # rows start at 2 (row 1 is header)
+            for idx, rec in enumerate(records, start=2):
+                uid = rec.get('user_id')
+                if uid is not None:
+                    try:
+                        self.user_row_cache[int(str(uid))] = idx
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.warning(f"States cache build error: {e}")
+
+    def load_all_states(self) -> dict[int, dict]:
+        data: dict[int, dict] = {}
+        if not self.sheet:
+            return data
+        try:
+            records = self.sheet.get_all_records()
+            for rec in records:
+                uid = rec.get('user_id')
+                state_json = rec.get('state_json')
+                if uid is None or not state_json:
+                    continue
+                try:
+                    uid_int = int(str(uid))
+                    state = json.loads(state_json)
+                    data[uid_int] = state
+                except Exception:
+                    continue
+            # build cache too
+            self._ensure_cache()
+        except Exception as e:
+            logger.warning(f"States load error: {e}")
+        return data
+
+    def save_user_state(self, user_id: int, state: dict, force: bool = False):
+        if not self.sheet:
+            return
+        now = datetime.now()
+        now_ts = now.strftime('%Y-%m-%d %H:%M:%S')
+        last = self.last_saved_at.get(user_id, 0)
+        if not force and (asyncio.get_event_loop().time() - last) < self.debounce_secs:
+            return
+        try:
+            state_copy = dict(state)
+            # Ensure serializable
+            if 'conversation_history' in state_copy:
+                # history not needed in persisted state to save space
+                state_copy.pop('conversation_history', None)
+            state_json = json.dumps(state_copy, ensure_ascii=False, separators=(',', ':'))
+            row_idx = self.user_row_cache.get(user_id)
+            if row_idx:
+                # update
+                self.sheet.update_cell(row_idx, 2, state_json)
+                self.sheet.update_cell(row_idx, 3, now_ts)
+                self.sheet.update_cell(row_idx, 4, now_ts)
+            else:
+                # append
+                self.sheet.append_row([user_id, state_json, now_ts, now_ts])
+                # refresh cache entry (new row is at bottom)
+                self._ensure_cache()
+            self.last_saved_at[user_id] = asyncio.get_event_loop().time()
+        except Exception as e:
+            logger.warning(f"States save error: {e}")
+
+    def flush_all(self, states: dict[int, dict]):
+        for uid, st in states.items():
+            self.save_user_state(uid, st, force=True)
+
+    def prune_old(self, days: int = 14):
+        if not self.sheet:
+            return 0
+        removed = 0
+        try:
+            records = self.sheet.get_all_records()
+            # iterate from bottom to top to delete rows safely
+            for idx in range(len(records), 0, -1):
+                rec = records[idx-1]
+                last_at = rec.get('last_activity_at') or rec.get('updated_at')
+                if not last_at:
+                    continue
+                try:
+                    dt = datetime.strptime(last_at, '%Y-%m-%d %H:%M:%S')
+                    if (datetime.now() - dt).days > days:
+                        self.sheet.delete_rows(idx+1)  # +1 for header row offset
+                        removed += 1
+                except Exception:
+                    continue
+        except Exception as e:
+            logger.warning(f"States prune error: {e}")
+        return removed
+
+persistence = SheetsPersistence(states_sheet) if states_sheet else None
 
 # === ИНТЕРВЬЮ ВОПРОСЫ ===
 INTERVIEW_QUESTIONS = [
@@ -304,6 +418,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'scenario': scenario_key,
         'free_used': 0,
     }
+    # Persist initial state
+    if persistence:
+        try:
+            user_states[user_id]['created_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            user_states[user_id]['last_activity_at'] = user_states[user_id]['created_at']
+            persistence.save_user_state(user_id, user_states[user_id], force=True)
+        except Exception as e:
+            logger.warning(f"Persist init error: {e}")
     # Сохранение в Users (Sheets)
     if users_sheet:
         try:
@@ -411,6 +533,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         except Exception as e:
             logger.warning(f"History write error: {e}")
+    # Persist debounced
+    if persistence:
+        try:
+            state['last_activity_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            persistence.save_user_state(user_id, state)
+        except Exception as e:
+            logger.warning(f"Persist save error: {e}")
     # Эхо для админа (контроль)
     scenario_cfg = SCENARIOS.get(state.get('scenario')) if state.get('scenario') else None
     if (scenario_cfg and scenario_cfg.get('admin_echo')) or admin_settings['echo_user_messages']:
