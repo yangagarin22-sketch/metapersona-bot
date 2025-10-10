@@ -10,6 +10,7 @@ from telegram import Update
 from telegram import __version__ as tg_version
 import telegram.ext as tg_ext
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.constants import ParseMode
 
 logging.basicConfig(
     level=logging.INFO,
@@ -824,6 +825,43 @@ def main():
         application.add_handler(CommandHandler("whitelist", admin_whitelist))
         application.add_error_handler(error_handler)
 
+        # Admin diagnostics
+        async def diag_webhook(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if update.effective_user.id != ADMIN_CHAT_ID:
+                return
+            try:
+                info = await application.bot.get_webhook_info()
+                txt = (
+                    f"url: {info.url or '-'}\n"
+                    f"has_custom_certificate: {info.has_custom_certificate}\n"
+                    f"pending_update_count: {info.pending_update_count}\n"
+                    f"ip_address: {getattr(info, 'ip_address', '-') }\n"
+                    f"last_error_date: {getattr(info, 'last_error_date', '-') }\n"
+                    f"last_error_message: {getattr(info, 'last_error_message', '-') }"
+                )
+                await update.message.reply_text(f"Webhook info:\n{txt}")
+            except Exception as e:
+                await update.message.reply_text(f"diag_webhook error: {e}")
+
+        async def reset_webhook(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if update.effective_user.id != ADMIN_CHAT_ID:
+                return
+            try:
+                base_url = os.environ.get('WEBHOOK_BASE_URL') or os.environ.get('RENDER_EXTERNAL_URL')
+                if not base_url:
+                    await update.message.reply_text('WEBHOOK_BASE_URL/RENDER_EXTERNAL_URL не задан')
+                    return
+                url_path = f"/webhook/{BOT_TOKEN}"
+                webhook_url = base_url.rstrip('/') + url_path
+                await application.bot.set_webhook(webhook_url, drop_pending_updates=False, allowed_updates=Update.ALL_TYPES)
+                info = await application.bot.get_webhook_info()
+                await update.message.reply_text(f"Webhook reset to: {info.url}\nPending: {info.pending_update_count}")
+            except Exception as e:
+                await update.message.reply_text(f"reset_webhook error: {e}")
+
+        application.add_handler(CommandHandler("diag_webhook", diag_webhook))
+        application.add_handler(CommandHandler("reset_webhook", reset_webhook))
+
         # Restore states at startup (last 14 days)
         restored = 0
         if persistence:
@@ -875,6 +913,7 @@ def main():
         async def handle_tg(request: web.Request):
             data = await request.json()
             try:
+                logger.info("Webhook hit: received update")
                 upd = Update.de_json(data, application.bot)
                 await application.process_update(upd)
             except Exception as e:
