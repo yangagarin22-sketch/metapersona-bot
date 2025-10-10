@@ -307,6 +307,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Сохранение в Users (Sheets)
     if users_sheet:
         try:
+            # Ensure History has extended headers
+            try:
+                headers = history_sheet.row_values(1)
+                needed = ['user_id','scenario','timestamp','role','message','free_used','daily_requests','interview_stage']
+                if headers != needed:
+                    history_sheet.clear()
+                    history_sheet.append_row(needed)
+            except Exception:
+                pass
             users_sheet.append_row([
                 user_id, username, 0, '', 0,
                 datetime.now().strftime('%Y-%m-%d'), 10, True,
@@ -349,6 +358,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(welcome_text)
     user_states[user_id]['conversation_history'].append({"role": "assistant", "content": welcome_text})
+    # Log assistant welcome into History
+    if history_sheet:
+        try:
+            scenario = user_states[user_id].get('scenario') or ''
+            history_sheet.append_row([
+                user_id,
+                scenario,
+                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'assistant',
+                welcome_text,
+                user_states[user_id].get('free_used', 0),
+                user_states[user_id].get('daily_requests', 0),
+                user_states[user_id].get('interview_stage', 0),
+            ])
+        except Exception as e:
+            logger.warning(f"History write error: {e}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -373,11 +398,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state['conversation_history'].append({"role": "user", "content": user_message})
     if history_sheet:
         try:
+            scenario = state.get('scenario') or ''
             history_sheet.append_row([
                 user_id,
+                scenario,
                 datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 'user',
-                user_message
+                user_message,
+                state.get('free_used', 0),
+                state.get('daily_requests', 0),
+                state.get('interview_stage', 0),
             ])
         except Exception as e:
             logger.warning(f"History write error: {e}")
@@ -432,6 +462,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             next_question = questions[state['interview_stage']]
             await update.message.reply_text(next_question)
             state['conversation_history'].append({"role": "assistant", "content": next_question})
+            if history_sheet:
+                try:
+                    history_sheet.append_row([
+                        user_id,
+                        state.get('scenario') or '',
+                        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        'assistant',
+                        next_question,
+                        state.get('free_used', 0),
+                        state.get('daily_requests', 0),
+                        state.get('interview_stage', 0),
+                    ])
+                except Exception as e:
+                    logger.warning(f"History write error: {e}")
         else:
             # Завершение интервью
             state['interview_answers'].append(user_message)
@@ -446,6 +490,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 Задай свой первый вопрос — и начнем!"""
             await update.message.reply_text(completion_text)
             state['conversation_history'].append({"role": "assistant", "content": completion_text})
+            if history_sheet:
+                try:
+                    history_sheet.append_row([
+                        user_id,
+                        state.get('scenario') or '',
+                        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        'assistant',
+                        completion_text,
+                        state.get('free_used', 0),
+                        state.get('daily_requests', 0),
+                        state.get('interview_stage', 0),
+                    ])
+                except Exception as e:
+                    logger.warning(f"History write error: {e}")
         return
     
     # ЭТАП 2: ДИАЛОГ С AI (С ИСТОРИЕЙ)
@@ -476,9 +534,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 history_sheet.append_row([
                     user_id,
+                    state.get('scenario') or '',
                     datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     'assistant',
-                    bot_response
+                    bot_response,
+                    state.get('free_used', 0),
+                    state.get('daily_requests', 0),
+                    state.get('interview_stage', 0),
                 ])
             except Exception as e:
                 logger.warning(f"History write error: {e}")
@@ -509,9 +571,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 history_sheet.append_row([
                     user_id,
+                    state.get('scenario') or '',
                     datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     'assistant',
-                    fallback_response
+                    fallback_response,
+                    state.get('free_used', 0),
+                    state.get('daily_requests', 0),
+                    state.get('interview_stage', 0),
                 ])
             except Exception as e:
                 logger.warning(f"History write error: {e}")
