@@ -492,6 +492,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'scenario': scenario_key,
         'free_used': 0,
         'last_start_ts': time.monotonic(),
+        'is_subscribed': False,
+        'subscription_until': '',
+        'last_payment_id': '',
     }
     # Persist initial state
     if persistence:
@@ -934,6 +937,57 @@ def main():
 
         application.add_handler(CommandHandler("diag_webhook", diag_webhook))
         application.add_handler(CommandHandler("reset_webhook", reset_webhook))
+
+        # Admin: export subscriptions (CSV-like to chat for now)
+        async def export_subscriptions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if update.effective_user.id != ADMIN_CHAT_ID:
+                return
+            rows = []
+            for uid, st in user_states.items():
+                rows.append(
+                    f"{uid}, {st.get('username','')}, {st.get('is_subscribed',False)}, {st.get('subscription_until','')}"
+                )
+            if not rows:
+                await update.message.reply_text("Нет данных подписок")
+            else:
+                head = "user_id, username, is_subscribed, subscription_until\n"
+                await update.message.reply_text(head + "\n".join(rows))
+
+        # Admin: quick state peek
+        async def state_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if update.effective_user.id != ADMIN_CHAT_ID:
+                return
+            if not context.args:
+                await update.message.reply_text("Использование: /state <user_id>")
+                return
+            try:
+                uid = int(context.args[0])
+                st = user_states.get(uid)
+                if not st:
+                    await update.message.reply_text("Пользователь не найден в памяти")
+                    return
+                keys = ['scenario','interview_stage','free_used','daily_requests','last_date','is_subscribed','subscription_until']
+                lines = [f"{k}: {st.get(k)}" for k in keys]
+                await update.message.reply_text("\n".join(lines))
+            except Exception as e:
+                await update.message.reply_text(f"state error: {e}")
+
+        # Admin: backup states (flush all to Sheets)
+        async def backup_states(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if update.effective_user.id != ADMIN_CHAT_ID:
+                return
+            try:
+                if persistence:
+                    persistence.flush_all(user_states)
+                    await update.message.reply_text(f"Сохранено состояний: {len(user_states)}")
+                else:
+                    await update.message.reply_text("Persistence отключен")
+            except Exception as e:
+                await update.message.reply_text(f"backup error: {e}")
+
+        application.add_handler(CommandHandler("export_subscriptions", export_subscriptions))
+        application.add_handler(CommandHandler("state", state_cmd))
+        application.add_handler(CommandHandler("backup_states", backup_states))
 
         # Restore states at startup (last 14 days)
         restored = 0
