@@ -4,6 +4,7 @@ import logging
 import asyncio
 import aiohttp
 import json
+import signal
 from datetime import datetime
 from telegram import Update
 from telegram import __version__ as tg_version
@@ -823,6 +824,40 @@ def main():
         application.add_handler(CommandHandler("whitelist", admin_whitelist))
         application.add_error_handler(error_handler)
 
+        # Restore states at startup (last 14 days)
+        restored = 0
+        if persistence:
+            try:
+                all_states = persistence.load_all_states()
+                for uid, st in all_states.items():
+                    last_at = st.get('last_activity_at') or st.get('updated_at')
+                    ok = True
+                    if last_at:
+                        try:
+                            dt = datetime.strptime(last_at, '%Y-%m-%d %H:%M:%S')
+                            ok = (datetime.now() - dt).days <= 14
+                        except Exception:
+                            ok = True
+                    if ok:
+                        # ensure required fields
+                        st.setdefault('conversation_history', [])
+                        st.setdefault('interview_answers', [])
+                        st.setdefault('interview_stage', 0)
+                        st.setdefault('daily_requests', 0)
+                        st.setdefault('custom_limit', 10)
+                        st.setdefault('free_used', 0)
+                        user_states[uid] = st
+                        restored += 1
+                try:
+                    removed = persistence.prune_old(14)
+                    if removed:
+                        logger.info(f"States pruned: {removed}")
+                except Exception:
+                    pass
+            except Exception as e:
+                logger.warning(f"States restore error: {e}")
+        logger.info(f"States restored: {restored}")
+
         port = int(os.environ.get('PORT', '10000'))
         base_url = os.environ.get('WEBHOOK_BASE_URL') or os.environ.get('RENDER_EXTERNAL_URL')
         if not base_url:
@@ -858,14 +893,38 @@ def main():
         await site.start()
         logger.info('Aiohttp server started')
         await application.bot.set_webhook(webhook_url, drop_pending_updates=False, allowed_updates=Update.ALL_TYPES)
+        # Graceful stop support
+        stop_event = asyncio.Event()
+
+        loop = asyncio.get_running_loop()
+
+        def _handle_stop():
+            try:
+                stop_event.set()
+            except Exception:
+                pass
+
         try:
-            # Sleep forever
-            await asyncio.Event().wait()
+            loop.add_signal_handler(signal.SIGTERM, _handle_stop)
+            loop.add_signal_handler(signal.SIGINT, _handle_stop)
+        except NotImplementedError:
+            # Signals not available (e.g., on Windows) — ignore
+            pass
+
+        try:
+            await stop_event.wait()
         finally:
             try:
                 await application.bot.delete_webhook(drop_pending_updates=False)
             except Exception:
                 pass
+            # Flush all states before shutdown
+            if persistence:
+                try:
+                    persistence.flush_all(user_states)
+                    logger.info(f"States flushed: {len(user_states)}")
+                except Exception as e:
+                    logger.warning(f"States flush error: {e}")
             await application.stop()
             await application.shutdown()
             await runner.cleanup()
