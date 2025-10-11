@@ -375,6 +375,9 @@ def build_system_prompt(user_data: dict) -> str:
                     f"- Цель 3–6 мес: {answers[9] if len(answers)>9 else ''}\n"
                 )
             base += profile
+            # Добавляем все ответы интервью в явном виде (для полной персонализации)
+            all_ans_lines = "\n".join([f"{i+1}. {a}" for i, a in enumerate(answers)])
+            base += ("\n📋 ВСЕ ОТВЕТЫ ИНТЕРВЬЮ (для контекста):\n" + all_ans_lines + "\n")
     return base
 
 async def deepseek_request(user_message, user_history=None, user_data=None):
@@ -1126,7 +1129,7 @@ def main():
         # Background self-heal task
         async def webhook_self_heal():
             nonlocal heal_expected_url
-            interval = int(os.environ.get('WEBHOOK_HEALTH_INTERVAL_SECS', '10'))
+            interval = int(os.environ.get('WEBHOOK_HEALTH_INTERVAL_SECS', '60'))
             while True:
                 try:
                     await asyncio.sleep(interval)
@@ -1182,4 +1185,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
