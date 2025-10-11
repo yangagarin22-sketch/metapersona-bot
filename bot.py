@@ -1126,7 +1126,7 @@ def main():
         # Background self-heal task
         async def webhook_self_heal():
             nonlocal heal_expected_url
-            interval = int(os.environ.get('WEBHOOK_HEALTH_INTERVAL_SECS', '60'))
+            interval = int(os.environ.get('WEBHOOK_HEALTH_INTERVAL_SECS', '10'))
             while True:
                 try:
                     await asyncio.sleep(interval)
@@ -1182,3 +1182,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
