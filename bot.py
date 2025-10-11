@@ -433,9 +433,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if getattr(update.effective_user, 'is_bot', False):
         return
     # Гейтинг по токену/whitelist и сценарий
-    scenario_key = None
     args = context.args if hasattr(context, 'args') else []
-    # Идемпотентность и антидребезг: если пользователь уже инициализирован
+    scenario_key = None
+    if args:
+        raw = args[0]
+        master, sep, maybe_scn = raw.partition('__')
+        if sep:
+            if START_TOKEN and master != START_TOKEN and (user_id not in whitelist_ids):
+                await update.message.reply_text("Доступ только по прямой ссылке. Обратитесь к администратору.")
+                return
+            scenario_key = maybe_scn if maybe_scn in SCENARIOS else None
+        else:
+            if START_TOKEN and raw != START_TOKEN and (user_id not in whitelist_ids):
+                await update.message.reply_text("Доступ только по прямой ссылке. Обратитесь к администратору.")
+                return
+
+    # Идемпотентность, антидребезг и переключение сценария по ссылке
     existing_state = user_states.get(user_id)
     if existing_state:
         # Антидребезг /start в течение 5 секунд
@@ -444,7 +457,50 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if isinstance(last_ts, (int, float)) and (now_mono - float(last_ts) < 5):
             return
         existing_state['last_start_ts'] = now_mono
-        # Не меняем сценарий, продолжаем с текущей точки
+
+        # Если пришли по ссылке другого сценария — переключаемся безопасно
+        if scenario_key and scenario_key != existing_state.get('scenario'):
+            existing_state['scenario'] = scenario_key
+            existing_state['interview_stage'] = 0
+            existing_state['interview_answers'] = []
+            existing_state['free_used'] = 0
+            # Выдаем приветствие нового сценария и первый вопрос
+            scenario_cfg = SCENARIOS.get(scenario_key)
+            if scenario_cfg:
+                first_q = scenario_cfg['questions'][0]
+                welcome_text = scenario_cfg['greeting'] + "\n\n" + first_q
+            else:
+                welcome_text = (
+                    "Привет.\n"
+                    "Я — MetaPersona, не бот и не ассистент.\n\n"
+                    "Давай начнем с знакомства:\n\n"
+                    "Как тебя зовут или какой ник использовать?"
+                )
+            await update.message.reply_text(welcome_text)
+            existing_state['conversation_history'].append({"role": "assistant", "content": welcome_text})
+            if history_sheet:
+                try:
+                    history_sheet.append_row([
+                        user_id,
+                        scenario_key or '',
+                        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        'assistant',
+                        welcome_text,
+                        existing_state.get('free_used', 0),
+                        existing_state.get('daily_requests', 0),
+                        existing_state.get('interview_stage', 0),
+                    ])
+                except Exception as e:
+                    logger.warning(f"History write error: {e}")
+            if persistence:
+                try:
+                    existing_state['last_activity_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    persistence.save_user_state(user_id, existing_state, force=True)
+                except Exception as e:
+                    logger.warning(f"Persist save error: {e}")
+            return
+
+        # Иначе продолжаем с текущей точки
         questions = get_interview_questions(existing_state)
         if existing_state.get('interview_stage', 0) < len(questions):
             next_q = questions[existing_state['interview_stage']]
@@ -474,19 +530,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.warning(f"Persist save error: {e}")
         return
-    if args:
-        raw = args[0]
-        master, sep, maybe_scn = raw.partition('__')
-        if sep:  # формат MASTER__scenario
-            if START_TOKEN and master != START_TOKEN and (user_id not in whitelist_ids):
-                await update.message.reply_text("Доступ только по прямой ссылке. Обратитесь к администратору.")
-                return
-            scenario_key = maybe_scn if maybe_scn in SCENARIOS else None
-        else:
-            # обычный токен без сценария
-            if START_TOKEN and raw != START_TOKEN and (user_id not in whitelist_ids):
-                await update.message.reply_text("Доступ только по прямой ссылке. Обратитесь к администратору.")
-                return
     else:
         # Если включен master-токен, а аргумента нет — не инициализируем нового пользователя
         if START_TOKEN and (user_id not in whitelist_ids):
