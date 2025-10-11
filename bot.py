@@ -27,6 +27,8 @@ GOOGLE_CREDENTIALS_JSON = os.environ.get('GOOGLE_CREDENTIALS')
 GOOGLE_SHEET_NAME = os.environ.get('GOOGLE_SHEET_NAME', 'MetaPersona_Users')
 START_TOKEN = os.environ.get('START_TOKEN')  # set to restrict access via deep-link
 WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET')  # optional secret for short webhook
+DEFAULT_SCENARIO = os.environ.get('DEFAULT_SCENARIO')
+ENABLE_NOARGS_SCENARIO = os.environ.get('ENABLE_NOARGS_SCENARIO', '0') in ('1','true','True')
 WHITELIST_IDS = set(
     int(x) for x in os.environ.get('WHITELIST_IDS', '').split(',') if x.strip().isdigit()
 )
@@ -531,10 +533,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.warning(f"Persist save error: {e}")
         return
     else:
-        # Если включен master-токен, а аргумента нет — не инициализируем нового пользователя
-        if START_TOKEN and (user_id not in whitelist_ids):
-            await update.message.reply_text("Открой бота по прямой ссылке.")
-            return
+        # Если включен fallback и задан DEFAULT_SCENARIO — запускаем его при /start без аргумента для нового пользователя
+        if (user_id not in user_states) and ENABLE_NOARGS_SCENARIO and DEFAULT_SCENARIO and (DEFAULT_SCENARIO in SCENARIOS):
+            scenario_key = DEFAULT_SCENARIO
+        else:
+            # Если включен master-токен, а аргумента нет — не инициализируем нового пользователя
+            if START_TOKEN and (user_id not in whitelist_ids):
+                await update.message.reply_text("Открой бота по прямой ссылке.")
+                return
     
     user_states[user_id] = {
         'interview_stage': 0,
