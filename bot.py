@@ -375,6 +375,9 @@ def build_system_prompt(user_data: dict) -> str:
                     f"- Цель 3–6 мес: {answers[9] if len(answers)>9 else ''}\n"
                 )
             base += profile
+            # Добавляем все ответы интервью в явном виде (для полной персонализации)
+            all_ans_lines = "\n".join([f"{i+1}. {a}" for i, a in enumerate(answers)])
+            base += ("\n📋 ВСЕ ОТВЕТЫ ИНТЕРВЬЮ (для контекста):\n" + all_ans_lines + "\n")
     return base
 
 async def deepseek_request(user_message, user_history=None, user_data=None):
