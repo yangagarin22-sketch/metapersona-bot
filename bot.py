@@ -460,47 +460,47 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         existing_state['last_start_ts'] = now_mono
 
-        # Если пришли по ссылке другого сценария — переключаемся безопасно
+        # Переключение сценария по ссылке разрешено только тестерам/админу
         if scenario_key and scenario_key != existing_state.get('scenario'):
-            existing_state['scenario'] = scenario_key
-            existing_state['interview_stage'] = 0
-            existing_state['interview_answers'] = []
-            existing_state['free_used'] = 0
-            # Выдаем приветствие нового сценария и первый вопрос
-            scenario_cfg = SCENARIOS.get(scenario_key)
-            if scenario_cfg:
-                first_q = scenario_cfg['questions'][0]
-                welcome_text = scenario_cfg['greeting'] + "\n\n" + first_q
-            else:
-                welcome_text = (
-                    "Привет.\n"
-                    "Я — MetaPersona, не бот и не ассистент.\n\n"
-                    "Давай начнем с знакомства:\n\n"
-                    "Как тебя зовут или какой ник использовать?"
-                )
-            await update.message.reply_text(welcome_text)
-            existing_state['conversation_history'].append({"role": "assistant", "content": welcome_text})
-            if history_sheet:
-                try:
-                    history_sheet.append_row([
-                        user_id,
-                        scenario_key or '',
-                        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                        'assistant',
-                        welcome_text,
-                        existing_state.get('free_used', 0),
-                        existing_state.get('daily_requests', 0),
-                        existing_state.get('interview_stage', 0),
-                    ])
-                except Exception as e:
-                    logger.warning(f"History write error: {e}")
-            if persistence:
-                try:
-                    existing_state['last_activity_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    persistence.save_user_state(user_id, existing_state, force=True)
-                except Exception as e:
-                    logger.warning(f"Persist save error: {e}")
-            return
+            if (user_id in whitelist_ids) or (user_id == ADMIN_CHAT_ID):
+                existing_state['scenario'] = scenario_key
+                existing_state['interview_stage'] = 0
+                existing_state['interview_answers'] = []
+                existing_state['free_used'] = 0
+                scenario_cfg = SCENARIOS.get(scenario_key)
+                if scenario_cfg:
+                    first_q = scenario_cfg['questions'][0]
+                    welcome_text = scenario_cfg['greeting'] + "\n\n" + first_q
+                else:
+                    welcome_text = (
+                        "Привет.\n"
+                        "Я — MetaPersona, не бот и не ассистент.\n\n"
+                        "Давай начнем с знакомства:\n\n"
+                        "Как тебя зовут или какой ник использовать?"
+                    )
+                await update.message.reply_text(welcome_text)
+                existing_state['conversation_history'].append({"role": "assistant", "content": welcome_text})
+                if history_sheet:
+                    try:
+                        history_sheet.append_row([
+                            user_id,
+                            scenario_key or '',
+                            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                            'assistant',
+                            welcome_text,
+                            existing_state.get('free_used', 0),
+                            existing_state.get('daily_requests', 0),
+                            existing_state.get('interview_stage', 0),
+                        ])
+                    except Exception as e:
+                        logger.warning(f"History write error: {e}")
+                if persistence:
+                    try:
+                        existing_state['last_activity_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        persistence.save_user_state(user_id, existing_state, force=True)
+                    except Exception as e:
+                        logger.warning(f"Persist save error: {e}")
+                return
 
         # Иначе продолжаем с текущей точки
         questions = get_interview_questions(existing_state)
