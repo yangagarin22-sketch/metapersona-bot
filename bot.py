@@ -767,6 +767,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.warning(f"Admin echo error: {e}")
     
+    # Если подписка истекла — уведомляем один раз и переводим в free-режим
+    if state.get('is_subscribed') and not is_subscription_active(state):
+        scenario_cfg_exp = SCENARIOS.get(state.get('scenario')) if state.get('scenario') else None
+        if not state.get('subscription_end_notified'):
+            end_msg = scenario_cfg_exp.get('subscription_end_message') if scenario_cfg_exp else None
+            if end_msg:
+                await update.message.reply_text(end_msg)
+                state['conversation_history'].append({"role": "assistant", "content": end_msg})
+        # Снимаем подписку и возвращаем в free-логіку
+        state['is_subscribed'] = False
+        state['subscription_end_notified'] = True
+        # Зафиксируем, что лимит уже исчерпан (если сценарий total_free)
+        scen = SCENARIOS.get(state.get('scenario')) if state.get('scenario') else None
+        if scen and scen.get('limit_mode') == 'total_free':
+            state['free_used'] = int(scen.get('limit_value', 5))
+            state['limit_notified'] = False
+        if persistence:
+            try:
+                state['last_activity_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                persistence.save_user_state(user_id, state)
+            except Exception as e:
+                logger.warning(f"Persist save error: {e}")
+
     # Проверка лимитов
     scenario_cfg = SCENARIOS.get(state.get('scenario')) if state.get('scenario') else None
     # Если активна подписка — лимиты отключены
@@ -860,8 +883,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif not scenario_cfg or scenario_cfg.get('limit_mode') != 'total_free':
         state['daily_requests'] += 1
     
-    await update.message.reply_text("💭 Думаю...")
-    
     # Сценарный разовый лимит (Vlasta): показываем оффер только один раз и только после 5 ответов
     if not is_subscription_active(state) and scenario_cfg and scenario_cfg.get('limit_mode') == 'total_free':
         free_used = state.get('free_used', 0)
@@ -879,6 +900,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e:
                     logger.warning(f"Auto-invoice error: {e}")
             return
+        elif free_used >= free_limit:
+            # Лимит уже показан ранее — просто блокируем доступ без запроса к ИИ
+            return
+
+    # Только теперь показываем индикатор размышления, если реально идём к ИИ
+    await update.message.reply_text("💭 Думаю...")
     
     # Используем историю для контекста ИИ
     bot_response = await deepseek_request(user_message, state['conversation_history'], state)
@@ -1212,6 +1239,8 @@ def main():
             # Reset scenario counters if needed
             state['daily_requests'] = 0
             state['free_used'] = 0
+            state['limit_notified'] = False
+            state['subscription_end_notified'] = False
             # Persist immediately
             if persistence:
                 try:
