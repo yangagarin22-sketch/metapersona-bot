@@ -133,6 +133,7 @@ async def send_invoice_to_user(context: ContextTypes.DEFAULT_TYPE, user_id: int)
     total_kopecks = int(round(VLASTA_PRICE_RUB * 100))
     prices = [LabeledPrice(label="Доступ на 7 дней к Vlasta", amount=total_kopecks)]
     provider_data = {
+        "capture": True,
         "receipt": {
             "items": [
                 {
@@ -1201,13 +1202,14 @@ def main():
 
             # Provider data with receipt items and tax system (ЮКасса сформирует чек, email спросит на платёжной форме)
             provider_data = {
+                "capture": True,
                 "receipt": {
                     # customer email/phone не передаём — включим need_email/send_email_to_provider
                     "items": [
                         {
                             "description": "Доступ к Vlasta на 7 дней",
                             "quantity": 1,
-                            "amount": {"value": VLASTA_PRICE_RUB, "currency": "RUB"},
+                            "amount": {"value": f"{VLASTA_PRICE_RUB:.2f}", "currency": "RUB"},
                             "vat_code": VAT_CODE,
                             "payment_mode": "full_payment",
                             "payment_subject": "service"
