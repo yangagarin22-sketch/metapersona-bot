@@ -6,11 +6,11 @@ import aiohttp
 import json
 import time
 import signal
-from datetime import datetime
-from telegram import Update
+from datetime import datetime, timedelta
+from telegram import Update, LabeledPrice
 from telegram import __version__ as tg_version
 import telegram.ext as tg_ext
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, PreCheckoutQueryHandler, filters, ContextTypes
 from telegram.constants import ParseMode
 
 logging.basicConfig(
@@ -37,6 +37,13 @@ logger.info(f"PTB: {tg_version}")
 logger.info(f"PTB ext module: {tg_ext.__file__}")
 logger.info(f"BOT_TOKEN: {'✅' if BOT_TOKEN else '❌'} | DEEPSEEK_API_KEY: {'✅' if DEEPSEEK_API_KEY else '❌'}")
 logger.info(f"ADMIN_CHAT_ID: {ADMIN_CHAT_ID} | GOOGLE_CREDENTIALS: {'✅' if GOOGLE_CREDENTIALS_JSON else '❌'}")
+
+# Payments (Telegram + YooKassa)
+PAYMENT_PROVIDER_TOKEN = os.environ.get('PAYMENT_PROVIDER_TOKEN')
+TAX_SYSTEM_CODE = int(os.environ.get('TAX_SYSTEM_CODE', '1'))
+VAT_CODE = int(os.environ.get('VAT_CODE', '1'))  # consult your accountant
+VLASTA_PRICE_RUB = float(os.environ.get('VLASTA_PRICE_RUB', '499.00'))
+logger.info(f"PAYMENT_PROVIDER_TOKEN: {'✅' if PAYMENT_PROVIDER_TOKEN else '❌'} | VLASTA_PRICE_RUB: {VLASTA_PRICE_RUB}")
 
 if not BOT_TOKEN or not DEEPSEEK_API_KEY:
     print("❌ ОШИБКА: Не установлены токены!")
@@ -106,6 +113,57 @@ admin_settings = {
     'notify_new_users': True,
     'echo_user_messages': False,
 }
+
+# === Подписка/оплата утилиты ===
+def is_subscription_active(state: dict) -> bool:
+    try:
+        if not state.get('is_subscribed'):
+            return False
+        until = state.get('subscription_until')
+        if not until:
+            return False
+        dt = datetime.strptime(until, '%Y-%m-%d %H:%M:%S')
+        return datetime.now() <= dt
+    except Exception:
+        return False
+
+async def send_invoice_to_user(context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    if not PAYMENT_PROVIDER_TOKEN:
+        return
+    total_kopecks = int(round(VLASTA_PRICE_RUB * 100))
+    prices = [LabeledPrice(label="Доступ на 7 дней к Vlasta", amount=total_kopecks)]
+    provider_data = {
+        "receipt": {
+            "items": [
+                {
+                    "description": "Доступ к Vlasta на 7 дней",
+                    "quantity": 1,
+                    "amount": {"value": f"{VLASTA_PRICE_RUB:.2f}", "currency": "RUB"},
+                    "vat_code": VAT_CODE,
+                    "payment_mode": "full_payment",
+                    "payment_subject": "service"
+                }
+            ],
+            "tax_system_code": TAX_SYSTEM_CODE
+        }
+    }
+    await context.bot.send_invoice(
+        chat_id=user_id,
+        title="Vlasta — доступ на 7 дней",
+        description=(
+            "Неделя персональной стратегической работы: ежедневные сессии,\n"
+            "разбор реальных ситуаций и инструменты влияния."
+        ),
+        payload=f"vlasta_week_{user_id}_{int(time.time())}",
+        provider_token=PAYMENT_PROVIDER_TOKEN,
+        currency="RUB",
+        prices=prices,
+        need_email=True,
+        send_email_to_provider=True,
+        need_phone_number=False,
+        send_phone_number_to_provider=False,
+        provider_data=json.dumps(provider_data, ensure_ascii=False)
+    )
 
 # === PERSISTENCE (Sheets) ===
 class SheetsPersistence:
@@ -708,7 +766,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Проверка лимитов
     scenario_cfg = SCENARIOS.get(state.get('scenario')) if state.get('scenario') else None
-    if not scenario_cfg or scenario_cfg.get('limit_mode') != 'total_free':
+    # Если активна подписка — лимиты отключены
+    if is_subscription_active(state):
+        pass
+    elif not scenario_cfg or scenario_cfg.get('limit_mode') != 'total_free':
         # Поведение по-умолчанию: дневной лимит
         today = datetime.now().strftime('%Y-%m-%d')
         if state['last_date'] != today:
@@ -763,15 +824,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             # Завершение интервью
             state['interview_answers'].append(user_message)
-            completion_text = """🎉 Отлично! Теперь я понимаю твой стиль мышления.
-
-Теперь я буду помогать тебе:
-• Видеть глубинную структуру мыслей
-• Находить неочевидные решения  
-• Двигаться к целям осознанно
-• Развивать твой уникальный стиль мышления
-
-Задай свой первый вопрос — и начнем!"""
+            # Завершение вводного интервью для Vlasta — мягкий мост в сессию
+            completion_text = (
+                "🎉 Отлично! Теперь у меня есть первый набросок твоей динамики.\n\n"
+                "Дальше — не теория, а практика. Отвечая на твои сообщения, я буду:\n"
+                "• Давать точные инструменты и готовые фразы,\n"
+                "• Помогать менять паттерны поведения там, где раньше ты упиралась в стену,\n"
+                "• Следить, чтобы каждый шаг давал реальный эффект.\n\n"
+                "Задай свой первый вопрос — и начнём."
+            )
             await update.message.reply_text(completion_text)
             state['conversation_history'].append({"role": "assistant", "content": completion_text})
             if history_sheet:
@@ -791,13 +852,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # ЭТАП 2: ДИАЛОГ С AI (С ИСТОРИЕЙ)
-    if not scenario_cfg or scenario_cfg.get('limit_mode') != 'total_free':
+    if is_subscription_active(state):
+        pass
+    elif not scenario_cfg or scenario_cfg.get('limit_mode') != 'total_free':
         state['daily_requests'] += 1
     
     await update.message.reply_text("💭 Думаю...")
     
     # Сценарный разовый лимит
-    if scenario_cfg and scenario_cfg.get('limit_mode') == 'total_free':
+    if not is_subscription_active(state) and scenario_cfg and scenario_cfg.get('limit_mode') == 'total_free':
         free_used = state.get('free_used', 0)
         free_limit = int(scenario_cfg.get('limit_value', 5))
         if free_used >= free_limit:
@@ -805,6 +868,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if lm:
                 await update.message.reply_text(lm)
                 state['conversation_history'].append({"role": "assistant", "content": lm})
+                # Автопредложение оплаты, если доступен провайдер
+                try:
+                    if PAYMENT_PROVIDER_TOKEN:
+                        await send_invoice_to_user(context, user_id)
+                except Exception as e:
+                    logger.warning(f"Auto-invoice error: {e}")
             return
     
     # Используем историю для контекста ИИ
@@ -833,7 +902,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(state['conversation_history']) > 15:
             state['conversation_history'] = state['conversation_history'][-15:]
         # Учет бесплатных ответов по сценарию
-        if scenario_cfg and scenario_cfg.get('limit_mode') == 'total_free':
+        if not is_subscription_active(state) and scenario_cfg and scenario_cfg.get('limit_mode') == 'total_free':
             state['free_used'] = state.get('free_used', 0) + 1
             free_limit = int(scenario_cfg.get('limit_value', 5))
             if state['free_used'] >= free_limit:
@@ -841,6 +910,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if lm:
                     await update.message.reply_text(lm)
                     state['conversation_history'].append({"role": "assistant", "content": lm})
+                # Автопредложение оплаты, если доступен провайдер
+                try:
+                    if PAYMENT_PROVIDER_TOKEN:
+                        await send_invoice_to_user(context, user_id)
+                except Exception as e:
+                    logger.warning(f"Auto-invoice error: {e}")
     else:
         import random
         # Комплаентные fallback-ответы без запрещённых формулировок
@@ -1066,6 +1141,92 @@ def main():
         application.add_handler(CommandHandler("export_subscriptions", export_subscriptions))
         application.add_handler(CommandHandler("state", state_cmd))
         application.add_handler(CommandHandler("backup_states", backup_states))
+
+        # === Billing/Payments Handlers ===
+        async def send_invoice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            user_id = update.effective_user.id
+            if user_id not in user_states:
+                await start(update, context); return
+            # Price: Telegram expects integer of the smallest currency unit (kopecks)
+            total_kopecks = int(round(VLASTA_PRICE_RUB * 100))
+            prices = [LabeledPrice(label="Доступ на 7 дней к Vlasta", amount=total_kopecks)]
+
+            # Provider data with receipt items and tax system (ЮКасса сформирует чек, email спросит на платёжной форме)
+            provider_data = {
+                "receipt": {
+                    # customer email/phone не передаём — включим need_email/send_email_to_provider
+                    "items": [
+                        {
+                            "description": "Доступ к Vlasta на 7 дней",
+                            "quantity": 1,
+                            "amount": {"value": VLASTA_PRICE_RUB, "currency": "RUB"},
+                            "vat_code": VAT_CODE,
+                            "payment_mode": "full_payment",
+                            "payment_subject": "service"
+                        }
+                    ],
+                    "tax_system_code": TAX_SYSTEM_CODE
+                }
+            }
+
+            await context.bot.send_invoice(
+                chat_id=user_id,
+                title="Vlasta — доступ на 7 дней",
+                description=(
+                    "Неделя персональной стратегической работы: ежедневные сессии,\n"
+                    "разбор реальных ситуаций и инструменты влияния."
+                ),
+                payload=f"vlasta_week_{user_id}_{int(time.time())}",
+                provider_token=PAYMENT_PROVIDER_TOKEN,
+                currency="RUB",
+                prices=prices,
+                need_email=True,
+                send_email_to_provider=True,
+                need_phone_number=False,
+                send_phone_number_to_provider=False,
+                provider_data=json.dumps(provider_data, ensure_ascii=False)
+            )
+
+        async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            query = update.pre_checkout_query
+            try:
+                await query.answer(ok=True)
+            except Exception:
+                await query.answer(ok=False, error_message="Ошибка при обработке оплаты. Попробуйте позже.")
+
+        async def successful_payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            user_id = update.effective_user.id
+            state = user_states.get(user_id)
+            if not state:
+                return
+            # Activate 7-day subscription window
+            until = (datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d %H:%M:%S')
+            state['is_subscribed'] = True
+            state['subscription_until'] = until
+            state['last_payment_id'] = getattr(update.message.successful_payment, 'provider_payment_charge_id', '')
+            # Reset scenario counters if needed
+            state['daily_requests'] = 0
+            state['free_used'] = 0
+            # Persist immediately
+            if persistence:
+                try:
+                    state['last_activity_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    persistence.save_user_state(user_id, state, force=True)
+                except Exception as e:
+                    logger.warning(f"Persist after payment error: {e}")
+            # Send subscription welcome if scenario provides
+            scenario_cfg = SCENARIOS.get(state.get('scenario')) if state.get('scenario') else None
+            sub_welcome = scenario_cfg.get('subscription_welcome') if scenario_cfg else None
+            if sub_welcome:
+                await update.message.reply_text(sub_welcome)
+            else:
+                await update.message.reply_text(
+                    "Оплата успешно получена. Доступ на 7 дней активирован."
+                )
+
+        application.add_handler(CommandHandler("buy", send_invoice))
+        application.add_handler(PreCheckoutQueryHandler(precheckout_callback))
+        application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
 
         # Restore states at startup (last 14 days)
         restored = 0
