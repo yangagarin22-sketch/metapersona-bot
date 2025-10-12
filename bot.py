@@ -504,8 +504,16 @@ async def deepseek_request(user_message, user_history=None, user_data=None):
 
 # === ОБРАБОТЧИКИ ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    username = update.effective_user.username or "Без username"
+    user = update.effective_user
+    # Ограничение доступа, если отсутствует User ID
+    if not user or getattr(user, 'id', None) is None:
+        await update.message.reply_text(
+            "Доступ к MetaPersona открыт только для пользователей с доступным User ID.\n\n"
+            "У вас скрыт/отсутствует ID, поэтому доступ временно закрыт."
+        )
+        return
+    user_id = user.id
+    username = user.username or "Без username"
     # Блокируем ботов
     if getattr(update.effective_user, 'is_bot', False):
         return
@@ -714,7 +722,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning(f"History write error: {e}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+    user = update.effective_user
+    # Ограничение доступа, если отсутствует User ID
+    if not user or getattr(user, 'id', None) is None:
+        await update.message.reply_text(
+            "Доступ к MetaPersona открыт только для пользователей с доступным User ID.\n\n"
+            "У вас скрыт/отсутствует ID, поэтому доступ временно закрыт."
+        )
+        return
+    user_id = user.id
     user_message = update.message.text
     # Игнорируем сообщения от ботов
     if getattr(update.effective_user, 'is_bot', False):
