@@ -356,8 +356,9 @@ SCENARIOS = {
             "- Разбор твоих конкретных ситуаций в режиме реального времени.\n"
             "- Пошаговый план, как сместить динамику отношений в сторону уважения, слышимости и влияния.\n\n"
             "Доступ на 7 дней: 499,00 ₽.\n\n"
-            "Меньше, чем чашка кофе и пончик в день — за уверенность в завтрашнем дне.\n\n"
-            "P.S. Это не «ещё один чат-бот». Это твой личный стратег. Решение за тобой."
+            "Меньше, чем чашка кофе и пончик — за уверенность в завтрашнем дне.\n\n"
+            "P.S. Это не «ещё один чат-бот». Это твой личный стратег.\n\n"
+            "Решение за тобой."
         ),
         # Подготовленные системные тексты для будущей интеграции оплаты
         'subscription_welcome': (
@@ -541,6 +542,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 existing_state['interview_stage'] = 0
                 existing_state['interview_answers'] = []
                 existing_state['free_used'] = 0
+                existing_state['limit_notified'] = False
                 scenario_cfg = SCENARIOS.get(scenario_key)
                 if scenario_cfg:
                     first_q = scenario_cfg['questions'][0]
@@ -626,6 +628,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'custom_limit': 10,
         'scenario': scenario_key,
         'free_used': 0,
+        'limit_notified': False,
         'last_start_ts': time.monotonic(),
         'is_subscribed': False,
         'subscription_until': '',
@@ -859,15 +862,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text("💭 Думаю...")
     
-    # Сценарный разовый лимит
+    # Сценарный разовый лимит (Vlasta): показываем оффер только один раз и только после 5 ответов
     if not is_subscription_active(state) and scenario_cfg and scenario_cfg.get('limit_mode') == 'total_free':
         free_used = state.get('free_used', 0)
         free_limit = int(scenario_cfg.get('limit_value', 5))
-        if free_used >= free_limit:
+        if free_used >= free_limit and not state.get('limit_notified', False):
             lm = scenario_cfg.get('limit_message')
             if lm:
                 await update.message.reply_text(lm)
                 state['conversation_history'].append({"role": "assistant", "content": lm})
+                state['limit_notified'] = True
                 # Автопредложение оплаты, если доступен провайдер
                 try:
                     if PAYMENT_PROVIDER_TOKEN:
@@ -905,11 +909,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not is_subscription_active(state) and scenario_cfg and scenario_cfg.get('limit_mode') == 'total_free':
             state['free_used'] = state.get('free_used', 0) + 1
             free_limit = int(scenario_cfg.get('limit_value', 5))
-            if state['free_used'] >= free_limit:
+            if state['free_used'] >= free_limit and not state.get('limit_notified', False):
                 lm = scenario_cfg.get('limit_message')
                 if lm:
                     await update.message.reply_text(lm)
                     state['conversation_history'].append({"role": "assistant", "content": lm})
+                    state['limit_notified'] = True
                 # Автопредложение оплаты, если доступен провайдер
                 try:
                     if PAYMENT_PROVIDER_TOKEN:
