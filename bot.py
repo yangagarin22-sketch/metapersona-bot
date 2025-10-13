@@ -187,6 +187,13 @@ async def send_sbp_link(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
             from yookassa import Payment as YKPayment  # lazy import
         except Exception:
             return
+        st = user_states.get(chat_id) or {}
+        customer_block = {}
+        if st.get('receipt_email'):
+            customer_block['email'] = st['receipt_email']
+        if st.get('receipt_phone'):
+            customer_block['phone'] = st['receipt_phone']
+
         payload = {
             "amount": {"value": f"{VLASTA_PRICE_RUB:.2f}", "currency": "RUB"},
             "confirmation": {"type": "redirect", "return_url": YOOKASSA_RETURN_URL, "locale": "ru_RU"},
@@ -199,6 +206,7 @@ async def send_sbp_link(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
                 "telegram_bot_name": "https://t.me/MetaPersonaBot"
             },
             "receipt": {
+                **({"customer": customer_block} if customer_block else {}),
                 "items": [{
                     "description": "Доступ к Vlasta на 7 дней",
                     "quantity": "1.0",
@@ -222,7 +230,12 @@ async def send_sbp_link(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
             kb = InlineKeyboardMarkup([[InlineKeyboardButton(text="Оплатить через ЮKassa (СБП)", url=url)]])
             await context.bot.send_message(chat_id=chat_id, text=f"Оплатите через ЮKassa (СБП):\n{url}", reply_markup=kb)
         else:
-            await context.bot.send_message(chat_id=chat_id, text="Ссылка СБП временно недоступна. Попробуйте позже.")
+            # Если ЮКасса требует e-mail/телефон для чека — попросим в чате и повторим
+            user_states[chat_id]['awaiting_receipt_contact'] = True
+            await context.bot.send_message(chat_id=chat_id, text=(
+                "Для оплаты через СБП укажи email (для чека) в формате: email: ваш@почта.ру\n"
+                "или телефон в формате: phone: 79XXXXXXXXX"
+            ))
             try:
                 await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"YK SBP: нет confirmation_url (payment_id={pid})")
             except Exception:
@@ -767,6 +780,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'free_used': 0,
         'limit_notified': False,
         'consent': False,
+        'receipt_email': '',
+        'receipt_phone': '',
+        'awaiting_receipt_contact': False,
         'last_start_ts': time.monotonic(),
         'is_subscribed': False,
         'subscription_until': '',
@@ -905,6 +921,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             persistence.save_user_state(user_id, state)
         except Exception as e:
             logger.warning(f"Persist save error: {e}")
+    # Если ждём контакт для чека (СБП): парсим email/phone
+    if state.get('awaiting_receipt_contact'):
+        txt = (user_message or '').strip()
+        if txt.lower().startswith('email:'):
+            state['receipt_email'] = txt.split(':', 1)[1].strip()
+            state['awaiting_receipt_contact'] = False
+            await update.message.reply_text("Спасибо. Формирую ссылку СБП…")
+            await send_sbp_link(context, user_id)
+            return
+        if txt.lower().startswith('phone:'):
+            state['receipt_phone'] = txt.split(':', 1)[1].strip()
+            state['awaiting_receipt_contact'] = False
+            await update.message.reply_text("Спасибо. Формирую ссылку СБП…")
+            await send_sbp_link(context, user_id)
+            return
+
     # Эхо для админа (контроль)
     scenario_cfg = SCENARIOS.get(state.get('scenario')) if state.get('scenario') else None
     if (scenario_cfg and scenario_cfg.get('admin_echo')) or admin_settings['echo_user_messages']:
