@@ -187,12 +187,17 @@ async def send_sbp_link(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
             from yookassa import Payment as YKPayment  # lazy import
         except Exception:
             return
-        payment = YKPayment.create({
+        payload = {
             "amount": {"value": f"{VLASTA_PRICE_RUB:.2f}", "currency": "RUB"},
-            "confirmation": {"type": "redirect", "return_url": YOOKASSA_RETURN_URL},
+            "confirmation": {"type": "redirect", "return_url": YOOKASSA_RETURN_URL, "locale": "ru_RU"},
             "capture": True,
             "description": "Vlasta — доступ на 7 дней",
-            "metadata": {"telegram_user_id": str(chat_id), "scenario": user_states.get(chat_id, {}).get('scenario', 'Vlasta')},
+            "metadata": {
+                "telegram_user_id": str(chat_id),
+                "scenario": user_states.get(chat_id, {}).get('scenario', 'Vlasta'),
+                "cms_name": "metapersona_bot",
+                "telegram_bot_name": "https://t.me/MetaPersonaBot"
+            },
             "receipt": {
                 "items": [{
                     "description": "Доступ к Vlasta на 7 дней",
@@ -204,12 +209,15 @@ async def send_sbp_link(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
                 }],
                 "tax_system_code": TAX_SYSTEM_CODE
             }
-        })
+        }
+        # Форсируем СБП как единственный метод
+        payload["payment_method_data"] = {"type": "sbp"}
+        payment = YKPayment.create(payload)
         conf = payment.confirmation
         url = getattr(conf, 'confirmation_url', None)
         if url:
             kb = InlineKeyboardMarkup([[InlineKeyboardButton(text="Оплатить через ЮKassa (СБП)", url=url)]])
-            await context.bot.send_message(chat_id=chat_id, text="Или оплатите через ЮKassa (СБП):", reply_markup=kb)
+            await context.bot.send_message(chat_id=chat_id, text="Оплатите через ЮKassa (СБП):", reply_markup=kb)
     except Exception:
         return
 
