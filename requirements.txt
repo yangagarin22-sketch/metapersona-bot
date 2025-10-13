@@ -3,3 +3,4 @@ aiohttp==3.9.5
 gspread==6.0.0
 google-auth==2.23.4
 google-auth-oauthlib==1.2.0
+yookassa==3.1.1
