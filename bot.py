@@ -220,7 +220,7 @@ async def send_sbp_link(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
         logger.info(f"YK SBP created: id={pid} url={url}")
         if url:
             kb = InlineKeyboardMarkup([[InlineKeyboardButton(text="Оплатить через ЮKassa (СБП)", url=url)]])
-            await context.bot.send_message(chat_id=chat_id, text="Оплатите через ЮKassa (СБП):", reply_markup=kb)
+            await context.bot.send_message(chat_id=chat_id, text=f"Оплатите через ЮKassa (СБП):\n{url}", reply_markup=kb)
         else:
             await context.bot.send_message(chat_id=chat_id, text="Ссылка СБП временно недоступна. Попробуйте позже.")
             try:
@@ -1489,6 +1489,12 @@ def main():
                 await cq.message.reply_text(f"Ошибка создания оплаты: {e}")
 
         application.add_handler(CallbackQueryHandler(on_callback, pattern=r'^yk_redirect:'))
+
+        # Command: /sbp — выдаёт СБП ссылку вручную
+        async def sbp_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            uid = update.effective_user.id
+            await send_sbp_link(context, uid)
+        application.add_handler(CommandHandler("sbp", sbp_cmd))
 
         # Restore states at startup (last 14 days)
         restored = 0
