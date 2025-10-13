@@ -1003,7 +1003,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         free_used = state.get('free_used', 0)
         free_limit = int(scenario_cfg.get('limit_value', 5))
         # Здесь free_used считает уже отправленные ИИ ответы. Мы блокируем только на последующее сообщение пользователя
-        if free_used > free_limit and not state.get('limit_notified', False):
+        if free_used >= free_limit and not state.get('limit_notified', False):
             lm = scenario_cfg.get('limit_message')
             if lm:
                 await update.message.reply_text(lm)
@@ -1021,7 +1021,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e:
                     logger.warning(f"Auto-invoice sbp error: {e}")
             return
-        elif free_used > free_limit:
+        elif free_used >= free_limit:
             # Лимит уже показан ранее — просто блокируем доступ без запроса к ИИ
             return
 
