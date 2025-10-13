@@ -179,6 +179,40 @@ async def send_invoice_to_user(context: ContextTypes.DEFAULT_TYPE, user_id: int)
         provider_data=json.dumps(provider_data, ensure_ascii=False)
     )
 
+async def send_sbp_link(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    if not (YOOKASSA_ACCOUNT_ID and YOOKASSA_SECRET_KEY and YOOKASSA_RETURN_URL):
+        return
+    try:
+        try:
+            from yookassa import Payment as YKPayment  # lazy import
+        except Exception:
+            return
+        payment = YKPayment.create({
+            "amount": {"value": f"{VLASTA_PRICE_RUB:.2f}", "currency": "RUB"},
+            "confirmation": {"type": "redirect", "return_url": YOOKASSA_RETURN_URL},
+            "capture": True,
+            "description": "Vlasta — доступ на 7 дней",
+            "metadata": {"telegram_user_id": str(chat_id), "scenario": user_states.get(chat_id, {}).get('scenario', 'Vlasta')},
+            "receipt": {
+                "items": [{
+                    "description": "Доступ к Vlasta на 7 дней",
+                    "quantity": "1.0",
+                    "amount": {"value": f"{VLASTA_PRICE_RUB:.2f}", "currency": "RUB"},
+                    "vat_code": VAT_CODE,
+                    "payment_mode": "full_payment",
+                    "payment_subject": "service"
+                }],
+                "tax_system_code": TAX_SYSTEM_CODE
+            }
+        })
+        conf = payment.confirmation
+        url = getattr(conf, 'confirmation_url', None)
+        if url:
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton(text="Оплатить через ЮKassa (СБП)", url=url)]])
+            await context.bot.send_message(chat_id=chat_id, text="Или оплатите через ЮKassa (СБП):", reply_markup=kb)
+    except Exception:
+        return
+
 # === PERSISTENCE (Sheets) ===
 class SheetsPersistence:
     def __init__(self, sheet):
@@ -933,7 +967,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if PAYMENT_PROVIDER_TOKEN:
                         await send_invoice_to_user(context, user_id)
                 except Exception as e:
-                    logger.warning(f"Auto-invoice error: {e}")
+                    logger.warning(f"Auto-invoice tg error: {e}")
+                # Параллельно предложим оплату через redirect/СБП (прямая ссылка)
+                try:
+                    await send_sbp_link(context, user_id)
+                except Exception as e:
+                    logger.warning(f"Auto-invoice sbp error: {e}")
             return
         elif free_used > free_limit:
             # Лимит уже показан ранее — просто блокируем доступ без запроса к ИИ
@@ -1227,11 +1266,6 @@ def main():
             }
 
             # Inline keyboard: Telegram pay and external YooKassa Smart Payment
-            kb = []
-            if YOOKASSA_ACCOUNT_ID and YOOKASSA_SECRET_KEY and YOOKASSA_RETURN_URL:
-                # We'll create redirect payment after sending invoice message
-                kb = [[InlineKeyboardButton(text="Оплатить через ЮKassa (СБП)", callback_data=f"yk_redirect:{user_id}:{int(time.time())}")]]
-
             await context.bot.send_invoice(
                 chat_id=user_id,
                 title="Vlasta — доступ на 7 дней",
@@ -1247,9 +1281,10 @@ def main():
                 send_email_to_provider=True,
                 need_phone_number=False,
                 send_phone_number_to_provider=False,
-                provider_data=json.dumps(provider_data, ensure_ascii=False),
-                reply_markup=InlineKeyboardMarkup(kb) if kb else None
+                provider_data=json.dumps(provider_data, ensure_ascii=False)
             )
+            # Отправляем ссылку СБП отдельным сообщением (прямая URL-кнопка)
+            await send_sbp_link(context, user_id)
 
         async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             query = update.pre_checkout_query
