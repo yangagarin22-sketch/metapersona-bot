@@ -7,7 +7,7 @@ import json
 import time
 import signal
 from datetime import datetime, timedelta
-from telegram import Update, LabeledPrice
+from telegram import Update, LabeledPrice, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram import __version__ as tg_version
 import telegram.ext as tg_ext
 from telegram.ext import Application, CommandHandler, MessageHandler, PreCheckoutQueryHandler, filters, ContextTypes
@@ -44,6 +44,19 @@ TAX_SYSTEM_CODE = int(os.environ.get('TAX_SYSTEM_CODE', '1'))
 VAT_CODE = int(os.environ.get('VAT_CODE', '1'))  # consult your accountant
 VLASTA_PRICE_RUB = float(os.environ.get('VLASTA_PRICE_RUB', '499.00'))
 logger.info(f"PAYMENT_PROVIDER_TOKEN: {'✅' if PAYMENT_PROVIDER_TOKEN else '❌'} | VLASTA_PRICE_RUB: {VLASTA_PRICE_RUB}")
+
+# YooKassa API redirect integration (for SBP etc.)
+YOOKASSA_ACCOUNT_ID = os.environ.get('YOOKASSA_ACCOUNT_ID')
+YOOKASSA_SECRET_KEY = os.environ.get('YOOKASSA_SECRET_KEY')
+YOOKASSA_RETURN_URL = os.environ.get('YOOKASSA_RETURN_URL') or (os.environ.get('WEBHOOK_BASE_URL') or os.environ.get('RENDER_EXTERNAL_URL') or '').rstrip('/') + '/pay/return'
+try:
+    if YOOKASSA_ACCOUNT_ID and YOOKASSA_SECRET_KEY:
+        from yookassa import Configuration
+        Configuration.account_id = YOOKASSA_ACCOUNT_ID
+        Configuration.secret_key = YOOKASSA_SECRET_KEY
+        logger.info('YooKassa SDK configured')
+except Exception as e:
+    logger.warning(f"YooKassa SDK not configured: {e}")
 
 if not BOT_TOKEN or not DEEPSEEK_API_KEY:
     print("❌ ОШИБКА: Не установлены токены!")
@@ -1213,6 +1226,12 @@ def main():
                 }
             }
 
+            # Inline keyboard: Telegram pay and external YooKassa Smart Payment
+            kb = []
+            if YOOKASSA_ACCOUNT_ID and YOOKASSA_SECRET_KEY and YOOKASSA_RETURN_URL:
+                # We'll create redirect payment after sending invoice message
+                kb = [[InlineKeyboardButton(text="Оплатить через ЮKassa (СБП)", callback_data=f"yk_redirect:{user_id}:{int(time.time())}")]]
+
             await context.bot.send_invoice(
                 chat_id=user_id,
                 title="Vlasta — доступ на 7 дней",
@@ -1228,7 +1247,8 @@ def main():
                 send_email_to_provider=True,
                 need_phone_number=False,
                 send_phone_number_to_provider=False,
-                provider_data=json.dumps(provider_data, ensure_ascii=False)
+                provider_data=json.dumps(provider_data, ensure_ascii=False),
+                reply_markup=InlineKeyboardMarkup(kb) if kb else None
             )
 
         async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1273,6 +1293,51 @@ def main():
         application.add_handler(CommandHandler("buy", send_invoice))
         application.add_handler(PreCheckoutQueryHandler(precheckout_callback))
         application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
+
+        # Callback for external YooKassa Smart Payment (create redirect payment)
+        from yookassa import Payment as YKPayment
+        async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if not update.callback_query:
+                return
+            cq = update.callback_query
+            data = cq.data or ''
+            if not data.startswith('yk_redirect:'):
+                return
+            await cq.answer()
+            if not (YOOKASSA_ACCOUNT_ID and YOOKASSA_SECRET_KEY and YOOKASSA_RETURN_URL):
+                await cq.message.reply_text("Ссылка на оплату временно недоступна")
+                return
+            try:
+                uid = update.effective_user.id
+                # Create redirect payment with capture and receipt
+                payment = YKPayment.create({
+                    "amount": {"value": f"{VLASTA_PRICE_RUB:.2f}", "currency": "RUB"},
+                    "confirmation": {"type": "redirect", "return_url": YOOKASSA_RETURN_URL},
+                    "capture": True,
+                    "description": "Vlasta — доступ на 7 дней",
+                    "metadata": {"telegram_user_id": str(uid), "scenario": user_states.get(uid, {}).get('scenario', 'Vlasta')},
+                    "receipt": {
+                        "items": [{
+                            "description": "Доступ к Vlasta на 7 дней",
+                            "quantity": "1.0",
+                            "amount": {"value": f"{VLASTA_PRICE_RUB:.2f}", "currency": "RUB"},
+                            "vat_code": VAT_CODE,
+                            "payment_mode": "full_payment",
+                            "payment_subject": "service"
+                        }],
+                        "tax_system_code": TAX_SYSTEM_CODE
+                    }
+                })
+                conf = payment.confirmation
+                url = getattr(conf, 'confirmation_url', None)
+                if url:
+                    await cq.message.reply_text("Оплатить через ЮKassa (СБП):\n" + url)
+                else:
+                    await cq.message.reply_text("Не удалось получить ссылку на оплату")
+            except Exception as e:
+                await cq.message.reply_text(f"Ошибка создания оплаты: {e}")
+
+        application.add_handler(MessageHandler(filters.StatusUpdate.ALL, on_callback))
 
         # Restore states at startup (last 14 days)
         restored = 0
@@ -1348,6 +1413,49 @@ def main():
             return web.Response(text='OK')
 
         aio.router.add_get('/health', handle_health)
+
+        # YooKassa webhook and return endpoints
+        async def handle_yk_webhook(request: web.Request):
+            try:
+                body = await request.json()
+            except Exception:
+                return web.Response(status=400, text='bad json')
+            try:
+                obj = body.get('object') or {}
+                if obj.get('status') == 'succeeded':
+                    meta = obj.get('metadata') or {}
+                    uid_str = meta.get('telegram_user_id')
+                    if uid_str and uid_str.isdigit():
+                        uid = int(uid_str)
+                        st = user_states.get(uid)
+                        if st:
+                            until = (datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d %H:%M:%S')
+                            st['is_subscribed'] = True
+                            st['subscription_until'] = until
+                            st['limit_notified'] = False
+                            st['subscription_end_notified'] = False
+                            if persistence:
+                                try:
+                                    st['last_activity_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                                    persistence.save_user_state(uid, st, force=True)
+                                except Exception:
+                                    pass
+                            # Send welcome
+                            scen = SCENARIOS.get(st.get('scenario')) if st.get('scenario') else None
+                            msg = scen.get('subscription_welcome') if scen else "Оплата получена, доступ активирован."
+                            try:
+                                await application.bot.send_message(chat_id=uid, text=msg)
+                            except Exception:
+                                pass
+                return web.Response(text='OK')
+            except Exception:
+                return web.Response(status=500, text='error')
+
+        async def handle_yk_return(request: web.Request):
+            return web.Response(text='Спасибо! Если оплата прошла, доступ уже активирован в чате.')
+
+        aio.router.add_post('/yookassa/webhook', handle_yk_webhook)
+        aio.router.add_get('/pay/return', handle_yk_return)
         aio.router.add_post(url_path, handle_tg)          # token path
         aio.router.add_post('/webhook', handle_tg_short)   # short alias path
 
