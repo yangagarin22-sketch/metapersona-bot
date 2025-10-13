@@ -204,9 +204,12 @@ async def send_sbp_link(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
                 "scenario": user_states.get(chat_id, {}).get('scenario', 'Vlasta'),
                 "cms_name": "metapersona_bot",
                 "telegram_bot_name": "https://t.me/MetaPersonaBot"
-            },
-            "receipt": {
-                **({"customer": customer_block} if customer_block else {}),
+            }
+        }
+        # Если мы не собираем персональные данные, не добавляем receipt без customer
+        if customer_block:
+            payload["receipt"] = {
+                "customer": customer_block,
                 "items": [{
                     "description": "Доступ к Vlasta на 7 дней",
                     "quantity": "1.0",
@@ -217,7 +220,6 @@ async def send_sbp_link(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
                 }],
                 "tax_system_code": TAX_SYSTEM_CODE
             }
-        }
         # Форсируем СБП как единственный метод
         payload["payment_method_data"] = {"type": "sbp"}
         logger.info(f"YK SBP create payload: user={chat_id} amount={VLASTA_PRICE_RUB} ts={int(time.time())}")
@@ -230,11 +232,9 @@ async def send_sbp_link(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
             kb = InlineKeyboardMarkup([[InlineKeyboardButton(text="Оплатить через ЮKassa (СБП)", url=url)]])
             await context.bot.send_message(chat_id=chat_id, text=f"Оплатите через ЮKassa (СБП):\n{url}", reply_markup=kb)
         else:
-            # Если ЮКасса требует e-mail/телефон для чека — попросим в чате и повторим
-            user_states[chat_id]['awaiting_receipt_contact'] = True
+            # Без customer ЮKassa может не отдать ссылку при включённой фискализации
             await context.bot.send_message(chat_id=chat_id, text=(
-                "Для оплаты через СБП укажи email (для чека) в формате: email: ваш@почта.ру\n"
-                "или телефон в формате: phone: 79XXXXXXXXX"
+                "Ссылка СБП временно недоступна. Оплатите в Telegram (картой/ЮMoney/SberPay) или повторите попытку позже."
             ))
             try:
                 await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"YK SBP: нет confirmation_url (payment_id={pid})")
