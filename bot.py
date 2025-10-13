@@ -383,6 +383,26 @@ def save_interview_answers_to_users(user_id: int, state: dict):
         # fail silent to not break dialog
         pass
 
+# === HISTORY helpers ===
+def load_recent_conversation_from_history(user_id: int, limit: int = 10) -> list[dict]:
+    if not history_sheet:
+        return []
+    try:
+        records = history_sheet.get_all_records()
+        convo: list[dict] = []
+        for rec in records:
+            if str(rec.get('user_id')) != str(user_id):
+                continue
+            role = rec.get('role')
+            msg = rec.get('message') or ''
+            if role in ('user', 'assistant') and msg:
+                convo.append({"role": role, "content": msg})
+        if len(convo) > limit:
+            convo = convo[-limit:]
+        return convo
+    except Exception:
+        return []
+
 # === ИНТЕРВЬЮ ВОПРОСЫ ===
 INTERVIEW_QUESTIONS = [
     "Как тебя зовут или какой ник использовать?",
@@ -894,6 +914,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if user_id not in user_states:
         await start(update, context)
+        # после первичного старта попытаться подтянуть историю из History
+        st = user_states.get(user_id)
+        if st and not st.get('conversation_history'):
+            st['conversation_history'] = load_recent_conversation_from_history(user_id, limit=10)
         return
     
     state = user_states[user_id]
