@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from telegram import Update, LabeledPrice, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram import __version__ as tg_version
 import telegram.ext as tg_ext
-from telegram.ext import Application, CommandHandler, MessageHandler, PreCheckoutQueryHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, PreCheckoutQueryHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.constants import ParseMode
 
 logging.basicConfig(
@@ -1295,7 +1295,6 @@ def main():
         application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
 
         # Callback for external YooKassa Smart Payment (create redirect payment)
-        from yookassa import Payment as YKPayment
         async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not update.callback_query:
                 return
@@ -1308,6 +1307,11 @@ def main():
                 await cq.message.reply_text("Ссылка на оплату временно недоступна")
                 return
             try:
+                try:
+                    from yookassa import Payment as YKPayment  # lazy import
+                except Exception as ie:
+                    await cq.message.reply_text("Модуль оплаты временно недоступен. Повторите попытку позже.")
+                    return
                 uid = update.effective_user.id
                 # Create redirect payment with capture and receipt
                 payment = YKPayment.create({
@@ -1337,7 +1341,7 @@ def main():
             except Exception as e:
                 await cq.message.reply_text(f"Ошибка создания оплаты: {e}")
 
-        application.add_handler(MessageHandler(filters.StatusUpdate.ALL, on_callback))
+        application.add_handler(CallbackQueryHandler(on_callback, pattern=r'^yk_redirect:'))
 
         # Restore states at startup (last 14 days)
         restored = 0
