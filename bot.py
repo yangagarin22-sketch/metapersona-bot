@@ -212,13 +212,27 @@ async def send_sbp_link(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
         }
         # Форсируем СБП как единственный метод
         payload["payment_method_data"] = {"type": "sbp"}
+        logger.info(f"YK SBP create payload: user={chat_id} amount={VLASTA_PRICE_RUB} ts={int(time.time())}")
         payment = YKPayment.create(payload)
         conf = payment.confirmation
         url = getattr(conf, 'confirmation_url', None)
+        pid = getattr(payment, 'id', None)
+        logger.info(f"YK SBP created: id={pid} url={url}")
         if url:
             kb = InlineKeyboardMarkup([[InlineKeyboardButton(text="Оплатить через ЮKassa (СБП)", url=url)]])
             await context.bot.send_message(chat_id=chat_id, text="Оплатите через ЮKassa (СБП):", reply_markup=kb)
-    except Exception:
+        else:
+            await context.bot.send_message(chat_id=chat_id, text="Ссылка СБП временно недоступна. Попробуйте позже.")
+            try:
+                await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"YK SBP: нет confirmation_url (payment_id={pid})")
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"YK SBP error: {e}")
+        try:
+            await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"YK SBP error: {e}")
+        except Exception:
+            pass
         return
 
 # === PERSISTENCE (Sheets) ===
