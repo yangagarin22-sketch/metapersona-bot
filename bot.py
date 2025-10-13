@@ -187,6 +187,13 @@ async def send_sbp_link(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
             from yookassa import Payment as YKPayment  # lazy import
         except Exception:
             return
+        st = user_states.get(chat_id) or {}
+        customer_block = {}
+        if st.get('receipt_email'):
+            customer_block['email'] = st['receipt_email']
+        if st.get('receipt_phone'):
+            customer_block['phone'] = st['receipt_phone']
+
         payload = {
             "amount": {"value": f"{VLASTA_PRICE_RUB:.2f}", "currency": "RUB"},
             "confirmation": {"type": "redirect", "return_url": YOOKASSA_RETURN_URL, "locale": "ru_RU"},
@@ -197,8 +204,12 @@ async def send_sbp_link(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
                 "scenario": user_states.get(chat_id, {}).get('scenario', 'Vlasta'),
                 "cms_name": "metapersona_bot",
                 "telegram_bot_name": "https://t.me/MetaPersonaBot"
-            },
-            "receipt": {
+            }
+        }
+        # Если мы не собираем персональные данные, не добавляем receipt без customer
+        if customer_block:
+            payload["receipt"] = {
+                "customer": customer_block,
                 "items": [{
                     "description": "Доступ к Vlasta на 7 дней",
                     "quantity": "1.0",
@@ -209,7 +220,6 @@ async def send_sbp_link(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
                 }],
                 "tax_system_code": TAX_SYSTEM_CODE
             }
-        }
         # Форсируем СБП как единственный метод
         payload["payment_method_data"] = {"type": "sbp"}
         logger.info(f"YK SBP create payload: user={chat_id} amount={VLASTA_PRICE_RUB} ts={int(time.time())}")
@@ -222,7 +232,10 @@ async def send_sbp_link(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
             kb = InlineKeyboardMarkup([[InlineKeyboardButton(text="Оплатить через ЮKassa (СБП)", url=url)]])
             await context.bot.send_message(chat_id=chat_id, text=f"Оплатите через ЮKassa (СБП):\n{url}", reply_markup=kb)
         else:
-            await context.bot.send_message(chat_id=chat_id, text="Ссылка СБП временно недоступна. Попробуйте позже.")
+            # Без customer ЮKassa может не отдать ссылку при включённой фискализации
+            await context.bot.send_message(chat_id=chat_id, text=(
+                "Ссылка СБП временно недоступна. Оплатите в Telegram (картой/ЮMoney/SberPay) или повторите попытку позже."
+            ))
             try:
                 await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"YK SBP: нет confirmation_url (payment_id={pid})")
             except Exception:
@@ -370,6 +383,26 @@ def save_interview_answers_to_users(user_id: int, state: dict):
         # fail silent to not break dialog
         pass
 
+# === HISTORY helpers ===
+def load_recent_conversation_from_history(user_id: int, limit: int = 10) -> list[dict]:
+    if not history_sheet:
+        return []
+    try:
+        records = history_sheet.get_all_records()
+        convo: list[dict] = []
+        for rec in records:
+            if str(rec.get('user_id')) != str(user_id):
+                continue
+            role = rec.get('role')
+            msg = rec.get('message') or ''
+            if role in ('user', 'assistant') and msg:
+                convo.append({"role": role, "content": msg})
+        if len(convo) > limit:
+            convo = convo[-limit:]
+        return convo
+    except Exception:
+        return []
+
 # === ИНТЕРВЬЮ ВОПРОСЫ ===
 INTERVIEW_QUESTIONS = [
     "Как тебя зовут или какой ник использовать?",
@@ -461,12 +494,13 @@ SCENARIOS = {
             "— Пиши кратко и содержательно: 4–6 предложений максимум. Без повторов и общих мест.\n"
             "— Каждый ответ обязан содержать 1–2 прикладных инструмента (фраза/действие/микрошаг).\n"
             "— Не используй пустые согласия («хорошо, ты права…») — если инструмент не подошёл, предложи альтернативу и критерии выбора.\n"
+            "— Если предлагаешь действие «сделай и вернись», добавь мини‑симуляцию прямо сейчас: разыграй с ней короткий диалог/сценарий, чтобы потренировать формулировку и тон.\n"
             "\n# МЯГКАЯ ПОДГОТОВКА К ПОДПИСКЕ\n"
             "— На 4‑м ответе мягко обозначь, что это тактика, а паттерн (3) меняется за 2–3 дня практики.\n"
             "— На 5‑м собери «карту ключей» и ненавязчиво усили ценность системной работы (без прямых продаж).\n"
             "— 1 раз за бесплатную сессию уместен деликатный намёк на «есть план глубже — по запросу».\n"
             "\n# ЮМОР И ТОН\n"
-            "— Лёгкий ироничный штрих допустим не чаще, чем раз в 2–3 сообщения. Без сарказма и обесценивания.\n"
+            "— Лёгкий ироничный штрих допустим не чаще, чем раз в 2–3 сообщения. Без сарказма и обесценивания. Допустимы доброжелательные образные метафоры.\n"
             "\n# СВОБОДНЫЕ ВОПРОСЫ\n"
             "— Уместно иногда напоминать: «можешь задать любой свободный вопрос или описать конкретную ситуацию — разберём».\n"
         ),
@@ -717,6 +751,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Иначе продолжаем с текущей точки
         questions = get_interview_questions(existing_state)
+        # Vlasta: не задаём первый вопрос, пока нет явного согласия "Да"
+        if existing_state.get('scenario') == 'Vlasta' and not existing_state.get('consent'):
+            await update.message.reply_text("Ответьте ""Да"" чтобы начать.")
+            return
         if existing_state.get('interview_stage', 0) < len(questions):
             next_q = questions[existing_state['interview_stage']]
             await update.message.reply_text(next_q)
@@ -767,6 +805,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'free_used': 0,
         'limit_notified': False,
         'consent': False,
+        'receipt_email': '',
+        'receipt_phone': '',
+        'awaiting_receipt_contact': False,
         'last_start_ts': time.monotonic(),
         'is_subscribed': False,
         'subscription_until': '',
@@ -873,6 +914,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if user_id not in user_states:
         await start(update, context)
+        # после первичного старта попытаться подтянуть историю из History
+        st = user_states.get(user_id)
+        if st and not st.get('conversation_history'):
+            st['conversation_history'] = load_recent_conversation_from_history(user_id, limit=10)
         return
     
     state = user_states[user_id]
@@ -905,6 +950,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             persistence.save_user_state(user_id, state)
         except Exception as e:
             logger.warning(f"Persist save error: {e}")
+    # Если ждём контакт для чека (СБП): парсим email/phone
+    if state.get('awaiting_receipt_contact'):
+        txt = (user_message or '').strip()
+        if txt.lower().startswith('email:'):
+            state['receipt_email'] = txt.split(':', 1)[1].strip()
+            state['awaiting_receipt_contact'] = False
+            await update.message.reply_text("Спасибо. Формирую ссылку СБП…")
+            await send_sbp_link(context, user_id)
+            return
+        if txt.lower().startswith('phone:'):
+            state['receipt_phone'] = txt.split(':', 1)[1].strip()
+            state['awaiting_receipt_contact'] = False
+            await update.message.reply_text("Спасибо. Формирую ссылку СБП…")
+            await send_sbp_link(context, user_id)
+            return
+
     # Эхо для админа (контроль)
     scenario_cfg = SCENARIOS.get(state.get('scenario')) if state.get('scenario') else None
     if (scenario_cfg and scenario_cfg.get('admin_echo')) or admin_settings['echo_user_messages']:
