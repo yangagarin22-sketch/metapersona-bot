@@ -179,6 +179,16 @@ async def send_invoice_to_user(context: ContextTypes.DEFAULT_TYPE, user_id: int)
         provider_data=json.dumps(provider_data, ensure_ascii=False)
     )
 
+async def send_sbp_prompt(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    if YOOKASSA_ACCOUNT_ID and YOOKASSA_SECRET_KEY and YOOKASSA_RETURN_URL:
+        try:
+            kb = InlineKeyboardMarkup(
+                [[InlineKeyboardButton(text="Оплатить через ЮKassa (СБП)", callback_data=f"yk_redirect:{chat_id}:{int(time.time())}")]]
+            )
+            await context.bot.send_message(chat_id=chat_id, text="Или оплатите через ЮKassa (СБП):", reply_markup=kb)
+        except Exception:
+            pass
+
 # === PERSISTENCE (Sheets) ===
 class SheetsPersistence:
     def __init__(self, sheet):
@@ -932,6 +942,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 try:
                     if PAYMENT_PROVIDER_TOKEN:
                         await send_invoice_to_user(context, user_id)
+                    # Параллельно предложим оплату через redirect/СБП
+                    await send_sbp_prompt(context, user_id)
                 except Exception as e:
                     logger.warning(f"Auto-invoice error: {e}")
             return
@@ -1227,11 +1239,6 @@ def main():
             }
 
             # Inline keyboard: Telegram pay and external YooKassa Smart Payment
-            kb = []
-            if YOOKASSA_ACCOUNT_ID and YOOKASSA_SECRET_KEY and YOOKASSA_RETURN_URL:
-                # We'll create redirect payment after sending invoice message
-                kb = [[InlineKeyboardButton(text="Оплатить через ЮKassa (СБП)", callback_data=f"yk_redirect:{user_id}:{int(time.time())}")]]
-
             await context.bot.send_invoice(
                 chat_id=user_id,
                 title="Vlasta — доступ на 7 дней",
@@ -1247,9 +1254,10 @@ def main():
                 send_email_to_provider=True,
                 need_phone_number=False,
                 send_phone_number_to_provider=False,
-                provider_data=json.dumps(provider_data, ensure_ascii=False),
-                reply_markup=InlineKeyboardMarkup(kb) if kb else None
+                provider_data=json.dumps(provider_data, ensure_ascii=False)
             )
+            # отправляем SBP кнопку отдельным сообщением, чтобы Telegram не "съедал" клавиатуру у инвойса
+            await send_sbp_prompt(context, user_id)
 
         async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             query = update.pre_checkout_query
