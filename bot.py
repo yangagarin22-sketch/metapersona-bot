@@ -321,6 +321,33 @@ class SheetsPersistence:
 
 persistence = SheetsPersistence(states_sheet) if states_sheet else None
 
+# === USERS sheet helpers ===
+def save_interview_answers_to_users(user_id: int, state: dict):
+    if not users_sheet:
+        return
+    try:
+        headers = users_sheet.row_values(1)
+        if not headers:
+            return
+        try:
+            interview_col = headers.index('interview_answers') + 1
+        except ValueError:
+            return
+        records = users_sheet.get_all_records()
+        row_idx = None
+        for idx, rec in enumerate(records, start=2):
+            if str(rec.get('user_id')) == str(user_id):
+                row_idx = idx
+                break
+        if not row_idx:
+            return
+        answers = state.get('interview_answers') or []
+        numbered = "\n".join([f"{i+1}. {a}" for i, a in enumerate(answers)])
+        users_sheet.update_cell(row_idx, interview_col, numbered)
+    except Exception:
+        # fail silent to not break dialog
+        pass
+
 # === ИНТЕРВЬЮ ВОПРОСЫ ===
 INTERVIEW_QUESTIONS = [
     "Как тебя зовут или какой ник использовать?",
@@ -990,6 +1017,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             await update.message.reply_text(completion_text)
             state['conversation_history'].append({"role": "assistant", "content": completion_text})
+            # Сохраняем ответы интервью в одну ячейку Users (нумерованный список построчно)
+            save_interview_answers_to_users(user_id, state)
             if history_sheet:
                 try:
                     history_sheet.append_row([
