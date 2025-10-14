@@ -234,12 +234,9 @@ async def send_sbp_link(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
                 "scenario": user_states.get(chat_id, {}).get('scenario', 'Vlasta'),
                 "cms_name": "metapersona_bot",
                 "telegram_bot_name": "https://t.me/MetaPersonaBot"
-            }
-        }
-        # Если мы не собираем персональные данные, не добавляем receipt без customer
-        if customer_block:
-            payload["receipt"] = {
-                "customer": customer_block,
+            },
+            # Чек без customer: ЮKassa соберёт контакт на своей странице
+            "receipt": {
                 "items": [{
                     "description": "Доступ к Vlasta на 7 дней",
                     "quantity": "1.0",
@@ -250,6 +247,7 @@ async def send_sbp_link(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
                 }],
                 "tax_system_code": TAX_SYSTEM_CODE
             }
+        }
         # Форсируем СБП как единственный метод
         payload["payment_method_data"] = {"type": "sbp"}
         logger.info(f"YK SBP create payload: user={chat_id} amount={VLASTA_PRICE_RUB} ts={int(time.time())}")
