@@ -61,6 +61,12 @@ except Exception as e:
 # VK Pixel for /pay/return page
 VK_PIXEL_ID = os.environ.get('VK_PIXEL_ID', '3708556')
 
+# Banner (image) before greeting for Vlasta scenario
+BANNER_VLASTA_URL = os.environ.get(
+    'BANNER_VLASTA_URL',
+    'https://raw.githubusercontent.com/yangagarin22-sketch/metapersona-bot/main/1baner.png'
+)
+
 if not BOT_TOKEN or not DEEPSEEK_API_KEY:
     print("❌ ОШИБКА: Не установлены токены!")
     sys.exit(1)
@@ -878,7 +884,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning(f"Admin notify error: {e}")
     
     if scenario_cfg:
-        # Мгновенный старт: сразу приветствие и первый вопрос
+        # Мгновенный старт: для Vlasta отправим баннер, затем приветствие + первый вопрос
+        if (scenario_key == 'Vlasta') and BANNER_VLASTA_URL:
+            try:
+                await context.bot.send_photo(chat_id=user_id, photo=BANNER_VLASTA_URL)
+            except Exception:
+                pass
         first_q = scenario_cfg['questions'][0]
         welcome_text = scenario_cfg['greeting'] + "\n\n" + first_q
     else:
