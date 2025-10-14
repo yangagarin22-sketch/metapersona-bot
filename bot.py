@@ -1761,7 +1761,7 @@ def main():
                 return web.Response(status=500, text='error')
 
         async def handle_yk_return(request: web.Request):
-            html = f"""
+            html = """
 <!DOCTYPE html>
 <html lang="ru"><head>
 <meta charset="utf-8" />
@@ -1774,7 +1774,7 @@ def main():
 <script>
 window.addEventListener('load', function(){
   if (typeof VK !== 'undefined' && VK.Retargeting) {
-    try { VK.Retargeting.Init('{VK_PIXEL_ID}'); VK.Retargeting.Hit(); } catch(e) {}
+    try { VK.Retargeting.Init('REPLACE_VK_PIXEL_ID'); VK.Retargeting.Hit(); } catch(e) {}
   }
 });
 </script>
@@ -1785,6 +1785,7 @@ window.addEventListener('load', function(){
   <p>Можно закрыть эту страницу.</p>
 </body></html>
 """
+            html = html.replace('REPLACE_VK_PIXEL_ID', VK_PIXEL_ID)
             return web.Response(text=html, content_type='text/html')
 
         aio.router.add_post('/yookassa/webhook', handle_yk_webhook)
