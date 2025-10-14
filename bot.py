@@ -7,7 +7,7 @@ import json
 import time
 import signal
 from datetime import datetime, timedelta, timezone
-from telegram import Update, LabeledPrice, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update, LabeledPrice, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 from telegram import __version__ as tg_version
 import telegram.ext as tg_ext
 from telegram.ext import Application, CommandHandler, MessageHandler, PreCheckoutQueryHandler, CallbackQueryHandler, filters, ContextTypes
@@ -1523,8 +1523,10 @@ def main():
                 send_phone_number_to_provider=False,
                 provider_data=json.dumps(provider_data, ensure_ascii=False)
             )
-            # Отправляем ссылку СБП отдельным сообщением (прямая URL-кнопка)
-            await send_sbp_link(context, user_id)
+            # Кнопка для СБП как WebApp (форма e-mail)
+            webapp_url = (os.environ.get('WEBHOOK_BASE_URL') or os.environ.get('RENDER_EXTERNAL_URL') or '').rstrip('/') + '/pay/sbp_form'
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton(text="Оплатить через СБП", web_app=WebAppInfo(url=webapp_url))]])
+            await context.bot.send_message(chat_id=user_id, text="Оплата через СБП", reply_markup=kb)
 
         async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             query = update.pre_checkout_query
