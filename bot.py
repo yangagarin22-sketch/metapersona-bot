@@ -220,11 +220,12 @@ async def send_sbp_link(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
         except Exception:
             return
         st = user_states.get(chat_id) or {}
-        customer_block = {}
-        if st.get('receipt_email'):
-            customer_block['email'] = st['receipt_email']
-        if st.get('receipt_phone'):
-            customer_block['phone'] = st['receipt_phone']
+        # Требование ЮKassa: для redirect (СБП) нужен email в receipt.customer
+        if not st.get('receipt_email'):
+            # Запросить e-mail транзитом и выйти, не создавая платёж
+            st['awaiting_receipt_contact'] = True
+            await context.bot.send_message(chat_id=chat_id, text="Укажи e-mail для чека в формате: email: ваш@почта.ру")
+            return
 
         payload = {
             "amount": {"value": f"{VLASTA_PRICE_RUB:.2f}", "currency": "RUB"},
@@ -238,6 +239,19 @@ async def send_sbp_link(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
                 "telegram_bot_name": "https://t.me/MetaPersonaBot"
             }
         }
+        # Добавляем receipt с customer.email и позициями
+        payload["receipt"] = {
+            "customer": {"email": st.get('receipt_email')},
+            "items": [{
+                "description": "Доступ к Vlasta на 7 дней",
+                "quantity": "1.0",
+                "amount": {"value": f"{VLASTA_PRICE_RUB:.2f}", "currency": "RUB"},
+                "vat_code": VAT_CODE,
+                "payment_mode": "full_payment",
+                "payment_subject": "service"
+            }],
+            "tax_system_code": TAX_SYSTEM_CODE
+        }
         # Форсируем СБП как единственный метод
         payload["payment_method_data"] = {"type": "sbp"}
         logger.info(f"YK SBP create payload: user={chat_id} amount={VLASTA_PRICE_RUB} ts={int(time.time())}")
@@ -249,6 +263,12 @@ async def send_sbp_link(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
         if url:
             kb = InlineKeyboardMarkup([[InlineKeyboardButton(text="Оплатить через ЮKassa (СБП)", url=url)]])
             await context.bot.send_message(chat_id=chat_id, text=f"Оплатите через ЮKassa (СБП):\n{url}", reply_markup=kb)
+            # Очистим транзитный e-mail
+            try:
+                st['receipt_email'] = ''
+                st['awaiting_receipt_contact'] = False
+            except Exception:
+                pass
         else:
             # Без customer ЮKassa может не отдать ссылку при включённой фискализации
             await context.bot.send_message(chat_id=chat_id, text=(
