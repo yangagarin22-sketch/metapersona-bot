@@ -6,7 +6,7 @@ import aiohttp
 import json
 import time
 import signal
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from telegram import Update, LabeledPrice, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram import __version__ as tg_version
 import telegram.ext as tg_ext
@@ -37,6 +37,11 @@ logger.info(f"PTB: {tg_version}")
 logger.info(f"PTB ext module: {tg_ext.__file__}")
 logger.info(f"BOT_TOKEN: {'✅' if BOT_TOKEN else '❌'} | DEEPSEEK_API_KEY: {'✅' if DEEPSEEK_API_KEY else '❌'}")
 logger.info(f"ADMIN_CHAT_ID: {ADMIN_CHAT_ID} | GOOGLE_CREDENTIALS: {'✅' if GOOGLE_CREDENTIALS_JSON else '❌'}")
+
+# Moscow timezone (UTC+3) helper
+MSK_TZ = timezone(timedelta(hours=3))
+def now_msk_str():
+    return datetime.now(MSK_TZ).strftime('%Y-%m-%d %H:%M:%S')
 
 # Payments (Telegram + YooKassa)
 PAYMENT_PROVIDER_TOKEN = os.environ.get('PAYMENT_PROVIDER_TOKEN')
@@ -325,7 +330,7 @@ class SheetsPersistence:
     def save_user_state(self, user_id: int, state: dict, force: bool = False):
         if not self.sheet:
             return
-        now = datetime.now()
+        now = datetime.now(MSK_TZ)
         now_ts = now.strftime('%Y-%m-%d %H:%M:%S')
         last = self.last_saved_at.get(user_id, 0)
         if not force and (asyncio.get_event_loop().time() - last) < self.debounce_secs:
@@ -370,7 +375,7 @@ class SheetsPersistence:
                     continue
                 try:
                     dt = datetime.strptime(last_at, '%Y-%m-%d %H:%M:%S')
-                    if (datetime.now() - dt).days > days:
+                    if (datetime.now(MSK_TZ) - dt).days > days:
                         self.sheet.delete_rows(idx+1)  # +1 for header row offset
                         removed += 1
                 except Exception:
@@ -777,7 +782,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         logger.warning(f"History write error: {e}")
                 if persistence:
                     try:
-                        existing_state['last_activity_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        existing_state['last_activity_at'] = now_msk_str()
                         persistence.save_user_state(user_id, existing_state, force=True)
                     except Exception as e:
                         logger.warning(f"Persist save error: {e}")
@@ -794,7 +799,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     history_sheet.append_row([
                         user_id,
                         existing_state.get('scenario') or '',
-                        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        now_msk_str(),
                         'assistant',
                         next_q,
                         existing_state.get('free_used', 0),
@@ -808,7 +813,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Persist (debounced)
         if persistence:
             try:
-                existing_state['last_activity_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                existing_state['last_activity_at'] = now_msk_str()
                 persistence.save_user_state(user_id, existing_state)
             except Exception as e:
                 logger.warning(f"Persist save error: {e}")
@@ -826,7 +831,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_states[user_id] = {
         'interview_stage': 0,
         'daily_requests': 0,
-        'last_date': datetime.now().strftime('%Y-%m-%d'),
+        'last_date': datetime.now(MSK_TZ).strftime('%Y-%m-%d'),
         'interview_answers': [],
         'conversation_history': [],
         'username': username,
@@ -846,7 +851,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Persist initial state
     if persistence:
         try:
-            user_states[user_id]['created_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            user_states[user_id]['created_at'] = now_msk_str()
             user_states[user_id]['last_activity_at'] = user_states[user_id]['created_at']
             persistence.save_user_state(user_id, user_states[user_id], force=True)
         except Exception as e:
@@ -865,8 +870,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             users_sheet.append_row([
                 user_id, username, 0, '', 0,
-                datetime.now().strftime('%Y-%m-%d'), 10, True,
-                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                datetime.now(MSK_TZ).strftime('%Y-%m-%d'), 10, True,
+                now_msk_str(),
                 scenario_key or '', 0,
                 utm['utm_source'], utm['utm_medium'], utm['utm_campaign'], utm['utm_content'], utm['utm_term'], utm['ad_id']
             ])
@@ -914,7 +919,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if funnel_sheet:
             funnel_sheet.append_row([
-                datetime.now().strftime('%Y-%m-%d %H:%M:%S'), user_id, 'clicked_start',
+                now_msk_str(), user_id, 'clicked_start',
                 scenario_key or '', utm['utm_source'], utm['utm_medium'], utm['utm_campaign'], utm['utm_content'], utm['utm_term'], utm['ad_id'], ''
             ])
     except Exception:
@@ -926,7 +931,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             history_sheet.append_row([
                 user_id,
                 scenario,
-                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                now_msk_str(),
                 'assistant',
                 welcome_text,
                 user_states[user_id].get('free_used', 0),
@@ -987,7 +992,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Persist debounced
     if persistence:
         try:
-            state['last_activity_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            state['last_activity_at'] = now_msk_str()
             persistence.save_user_state(user_id, state)
         except Exception as e:
             logger.warning(f"Persist save error: {e}")
@@ -1036,7 +1041,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             state['limit_notified'] = False
         if persistence:
             try:
-                state['last_activity_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                state['last_activity_at'] = now_msk_str()
                 persistence.save_user_state(user_id, state)
             except Exception as e:
                 logger.warning(f"Persist save error: {e}")
@@ -1058,7 +1063,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
     elif not scenario_cfg or scenario_cfg.get('limit_mode') != 'total_free':
         # Поведение по-умолчанию: дневной лимит
-        today = datetime.now().strftime('%Y-%m-%d')
+        today = datetime.now(MSK_TZ).strftime('%Y-%m-%d')
         if state['last_date'] != today:
             state['daily_requests'] = 0
             state['last_date'] = today
@@ -1097,7 +1102,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     history_sheet.append_row([
                         user_id,
                         state.get('scenario') or '',
-                        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        now_msk_str(),
                         'assistant',
                         first_question,
                         state.get('free_used', 0),
@@ -1128,7 +1133,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     history_sheet.append_row([
                         user_id,
                         state.get('scenario') or '',
-                        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        now_msk_str(),
                         'assistant',
                         next_question,
                         state.get('free_used', 0),
@@ -1159,7 +1164,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     history_sheet.append_row([
                         user_id,
                         state.get('scenario') or '',
-                        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        now_msk_str(),
                         'assistant',
                         completion_text,
                         state.get('free_used', 0),
@@ -1218,7 +1223,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 history_sheet.append_row([
                     user_id,
                     state.get('scenario') or '',
-                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    now_msk_str(),
                     'assistant',
                     bot_response,
                     state.get('free_used', 0),
@@ -1252,7 +1257,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 history_sheet.append_row([
                     user_id,
                     state.get('scenario') or '',
-                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    now_msk_str(),
                     'assistant',
                     fallback_response,
                     state.get('free_used', 0),
@@ -1267,7 +1272,7 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_CHAT_ID:
         return
     total_users = len(user_states)
-    today = datetime.now().strftime('%Y-%m-%d')
+    today = datetime.now(MSK_TZ).strftime('%Y-%m-%d')
     active_today = sum(1 for u in user_states.values() if u['last_date'] == today)
     blocked = len(blocked_users)
     await update.message.reply_text(
@@ -1524,7 +1529,7 @@ def main():
             if not state:
                 return
             # Activate 7-day subscription window
-            until = (datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d %H:%M:%S')
+            until = (datetime.now(MSK_TZ) + timedelta(days=7)).strftime('%Y-%m-%d %H:%M:%S')
             state['is_subscribed'] = True
             state['subscription_until'] = until
             state['last_payment_id'] = getattr(update.message.successful_payment, 'provider_payment_charge_id', '')
@@ -1536,7 +1541,7 @@ def main():
             # Persist immediately
             if persistence:
                 try:
-                    state['last_activity_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    state['last_activity_at'] = now_msk_str()
                     persistence.save_user_state(user_id, state, force=True)
                 except Exception as e:
                     logger.warning(f"Persist after payment error: {e}")
@@ -1620,7 +1625,7 @@ def main():
                     if last_at:
                         try:
                             dt = datetime.strptime(last_at, '%Y-%m-%d %H:%M:%S')
-                            ok = (datetime.now() - dt).days <= 14
+                            ok = (datetime.now(MSK_TZ) - dt).days <= 14
                         except Exception:
                             ok = True
                     if ok:
@@ -1699,14 +1704,14 @@ def main():
                         uid = int(uid_str)
                         st = user_states.get(uid)
                         if st:
-                            until = (datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d %H:%M:%S')
+                            until = (datetime.now(MSK_TZ) + timedelta(days=7)).strftime('%Y-%m-%d %H:%M:%S')
                             st['is_subscribed'] = True
                             st['subscription_until'] = until
                             st['limit_notified'] = False
                             st['subscription_end_notified'] = False
                             if persistence:
                                 try:
-                                    st['last_activity_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                                    st['last_activity_at'] = now_msk_str()
                                     persistence.save_user_state(uid, st, force=True)
                                 except Exception:
                                     pass
