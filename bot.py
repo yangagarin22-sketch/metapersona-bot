@@ -58,6 +58,15 @@ try:
 except Exception as e:
     logger.warning(f"YooKassa SDK not configured: {e}")
 
+# VK Pixel for /pay/return page
+VK_PIXEL_ID = os.environ.get('VK_PIXEL_ID', '3708556')
+
+# Banner (image) before greeting for Vlasta scenario
+BANNER_VLASTA_URL = os.environ.get(
+    'BANNER_VLASTA_URL',
+    'https://raw.githubusercontent.com/yangagarin22-sketch/metapersona-bot/main/1baner.png'
+)
+
 if not BOT_TOKEN or not DEEPSEEK_API_KEY:
     print("❌ ОШИБКА: Не установлены токены!")
     sys.exit(1)
@@ -72,6 +81,7 @@ from aiohttp import web
 users_sheet = None
 history_sheet = None
 states_sheet = None
+funnel_sheet = None
 if GOOGLE_CREDENTIALS_JSON:
     try:
         import gspread
@@ -91,8 +101,17 @@ if GOOGLE_CREDENTIALS_JSON:
             users_sheet = ss.add_worksheet(title='Users', rows=1000, cols=20)
             users_sheet.append_row([
                 'user_id','username','interview_stage','interview_answers',
-                'daily_requests','last_date','custom_limit','is_active','created_at'
+                'daily_requests','last_date','custom_limit','is_active','created_at',
+                'scenario','free_used','utm_source','utm_medium','utm_campaign','utm_content','utm_term','ad_id'
             ])
+        # Ensure Users header includes UTM columns (non-destructive append)
+        try:
+            u_headers = users_sheet.row_values(1)
+            needed_extra = ['scenario','free_used','utm_source','utm_medium','utm_campaign','utm_content','utm_term','ad_id']
+            if any(col not in u_headers for col in needed_extra):
+                users_sheet.update('A1', [u_headers + [c for c in needed_extra if c not in u_headers]])
+        except Exception:
+            pass
         try:
             history_sheet = ss.worksheet('History')
         except Exception:
@@ -103,6 +122,12 @@ if GOOGLE_CREDENTIALS_JSON:
         except Exception:
             states_sheet = ss.add_worksheet(title='States', rows=5000, cols=10)
             states_sheet.append_row(['user_id','state_json','updated_at','last_activity_at'])
+        # Funnel sheet
+        try:
+            funnel_sheet = ss.worksheet('Funnel')
+        except Exception:
+            funnel_sheet = ss.add_worksheet(title='Funnel', rows=5000, cols=12)
+            funnel_sheet.append_row(['timestamp','user_id','event','scenario','utm_source','utm_medium','utm_campaign','utm_content','utm_term','ad_id','extra'])
         # Ensure States header is correct (non-destructive)
         try:
             s_headers = states_sheet.row_values(1)
@@ -682,6 +707,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     # Гейтинг по токену/whitelist и сценарий
     args = context.args if hasattr(context, 'args') else []
+    # UTM parsing from deep-link
+    utm = {k: '' for k in ['utm_source','utm_medium','utm_campaign','utm_content','utm_term','ad_id']}
     scenario_key = None
     if args:
         raw = args[0]
@@ -691,6 +718,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("Доступ только по прямой ссылке. Обратитесь к администратору.")
                 return
             scenario_key = maybe_scn if maybe_scn in SCENARIOS else None
+            # parse utm from remainder
+            if len(args) > 1:
+                for token in args[1:]:
+                    if '=' in token:
+                        k, v = token.split('=', 1)
+                        if k in utm:
+                            utm[k] = v
         else:
             if START_TOKEN and raw != START_TOKEN and (user_id not in whitelist_ids):
                 await update.message.reply_text("Доступ только по прямой ссылке. Обратитесь к администратору.")
@@ -749,12 +783,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         logger.warning(f"Persist save error: {e}")
                 return
 
-        # Иначе продолжаем с текущей точки
+        # Иначе продолжаем с текущей точки (мгновенный старт уже выдал первый вопрос)
         questions = get_interview_questions(existing_state)
-        # Vlasta: не задаём первый вопрос, пока нет явного согласия "Да"
-        if existing_state.get('scenario') == 'Vlasta' and not existing_state.get('consent'):
-            await update.message.reply_text("Ответьте ""Да"" чтобы начать.")
-            return
         if existing_state.get('interview_stage', 0) < len(questions):
             next_q = questions[existing_state['interview_stage']]
             await update.message.reply_text(next_q)
@@ -804,7 +834,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'scenario': scenario_key,
         'free_used': 0,
         'limit_notified': False,
-        'consent': False,
+        'first_question_sent': False,
+        'first_question_pending': False,
         'receipt_email': '',
         'receipt_phone': '',
         'awaiting_receipt_contact': False,
@@ -837,7 +868,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 user_id, username, 0, '', 0,
                 datetime.now().strftime('%Y-%m-%d'), 10, True,
                 datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                scenario_key or '', 0
+                scenario_key or '', 0,
+                utm['utm_source'], utm['utm_medium'], utm['utm_campaign'], utm['utm_content'], utm['utm_term'], utm['ad_id']
             ])
         except Exception as e:
             logger.warning(f"Users write error: {e}")
@@ -854,12 +886,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning(f"Admin notify error: {e}")
     
     if scenario_cfg:
-        # Vlasta: сначала спросить согласие Да/Нет, без немедленного первого вопроса
-        if scenario_key == 'Vlasta':
-            welcome_text = scenario_cfg['greeting']
-        else:
-            first_q = scenario_cfg['questions'][0]
-            welcome_text = scenario_cfg['greeting'] + "\n\n" + first_q
+        # Мгновенный старт: для Vlasta отправим баннер, затем приветствие
+        if (scenario_key == 'Vlasta') and BANNER_VLASTA_URL:
+            try:
+                await context.bot.send_photo(chat_id=user_id, photo=BANNER_VLASTA_URL)
+            except Exception:
+                pass
+        welcome_text = scenario_cfg['greeting']
     else:
         welcome_text = (
             "Привет.\n"
@@ -878,6 +911,54 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(welcome_text)
     user_states[user_id]['conversation_history'].append({"role": "assistant", "content": welcome_text})
+    # Планируем первый вопрос через короткую паузу, чтобы не перегружать старт
+    if scenario_cfg:
+        first_q = scenario_cfg['questions'][0]
+        user_states[user_id]['first_question_pending'] = True
+        async def _send_first_q_later():
+            try:
+                await asyncio.sleep(1.0)
+                st = user_states.get(user_id)
+                if not st:
+                    return
+                if st.get('first_question_sent'):
+                    return
+                # Не задаём, если уже начали интервью
+                if st.get('interview_stage', 0) > 0:
+                    return
+                await context.bot.send_message(chat_id=user_id, text=first_q)
+                st['first_question_sent'] = True
+                st['first_question_pending'] = False
+                st['conversation_history'].append({"role": "assistant", "content": first_q})
+                if history_sheet:
+                    try:
+                        history_sheet.append_row([
+                            user_id,
+                            st.get('scenario') or '',
+                            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                            'assistant',
+                            first_q,
+                            st.get('free_used', 0),
+                            st.get('daily_requests', 0),
+                            st.get('interview_stage', 0),
+                        ])
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        try:
+            asyncio.create_task(_send_first_q_later())
+        except Exception:
+            pass
+    # Funnel: clicked_start
+    try:
+        if funnel_sheet:
+            funnel_sheet.append_row([
+                datetime.now().strftime('%Y-%m-%d %H:%M:%S'), user_id, 'clicked_start',
+                scenario_key or '', utm['utm_source'], utm['utm_medium'], utm['utm_campaign'], utm['utm_content'], utm['utm_term'], utm['ad_id'], ''
+            ])
+    except Exception:
+        pass
     # Log assistant welcome into History
     if history_sheet:
         try:
@@ -978,7 +1059,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning(f"Admin echo error: {e}")
     
     # Если подписка истекла — уведомляем один раз и переводим в free-режим
-    if state.get('is_subscribed') and not is_subscription_active(state):
+        if state.get('is_subscribed') and not is_subscription_active(state):
         scenario_cfg_exp = SCENARIOS.get(state.get('scenario')) if state.get('scenario') else None
         if not state.get('subscription_end_notified'):
             end_msg = scenario_cfg_exp.get('subscription_end_message') if scenario_cfg_exp else None
@@ -999,6 +1080,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 persistence.save_user_state(user_id, state)
             except Exception as e:
                 logger.warning(f"Persist save error: {e}")
+            # Авто-оффер: сразу отправляем инвойс и СБП-ссылку
+            try:
+                if PAYMENT_PROVIDER_TOKEN:
+                    await send_invoice_to_user(context, user_id)
+            except Exception as e:
+                logger.warning(f"Auto-offer tg error: {e}")
+            try:
+                await send_sbp_link(context, user_id)
+            except Exception as e:
+                logger.warning(f"Auto-offer sbp error: {e}")
 
     # Проверка лимитов
     scenario_cfg = SCENARIOS.get(state.get('scenario')) if state.get('scenario') else None
@@ -1670,7 +1761,31 @@ def main():
                 return web.Response(status=500, text='error')
 
         async def handle_yk_return(request: web.Request):
-            return web.Response(text='Спасибо! Если оплата прошла, доступ уже активирован в чате.')
+            html = f"""
+<!DOCTYPE html>
+<html lang="ru"><head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Оплата завершена</title>
+<!-- VK Pixel -->
+<script>
+!function(){var t=document.createElement("script");t.type="text/javascript",t.async=!0,t.src="https://vk.com/js/api/openapi.js?168";var e=document.getElementsByTagName("script")[0];e.parentNode.insertBefore(t,e)}();
+</script>
+<script>
+window.addEventListener('load', function(){
+  if (typeof VK !== 'undefined' && VK.Retargeting) {
+    try { VK.Retargeting.Init('{VK_PIXEL_ID}'); VK.Retargeting.Hit(); } catch(e) {}
+  }
+});
+</script>
+</head>
+<body style="font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica Neue, Arial; margin:40px;">
+  <h2>Спасибо!</h2>
+  <p>Если оплата прошла, доступ уже активирован в чате Telegram.</p>
+  <p>Можно закрыть эту страницу.</p>
+</body></html>
+"""
+            return web.Response(text=html, content_type='text/html')
 
         aio.router.add_post('/yookassa/webhook', handle_yk_webhook)
         aio.router.add_get('/pay/return', handle_yk_return)
