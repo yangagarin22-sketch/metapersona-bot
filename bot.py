@@ -1059,7 +1059,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning(f"Admin echo error: {e}")
     
     # Если подписка истекла — уведомляем один раз и переводим в free-режим
-        if state.get('is_subscribed') and not is_subscription_active(state):
+    if state.get('is_subscribed') and not is_subscription_active(state):
         scenario_cfg_exp = SCENARIOS.get(state.get('scenario')) if state.get('scenario') else None
         if not state.get('subscription_end_notified'):
             end_msg = scenario_cfg_exp.get('subscription_end_message') if scenario_cfg_exp else None
@@ -1080,16 +1080,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 persistence.save_user_state(user_id, state)
             except Exception as e:
                 logger.warning(f"Persist save error: {e}")
-            # Авто-оффер: сразу отправляем инвойс и СБП-ссылку
-            try:
-                if PAYMENT_PROVIDER_TOKEN:
-                    await send_invoice_to_user(context, user_id)
-            except Exception as e:
-                logger.warning(f"Auto-offer tg error: {e}")
-            try:
-                await send_sbp_link(context, user_id)
-            except Exception as e:
-                logger.warning(f"Auto-offer sbp error: {e}")
+        # Авто-оффер: сразу отправляем инвойс и СБП-ссылку
+        try:
+            if PAYMENT_PROVIDER_TOKEN:
+                await send_invoice_to_user(context, user_id)
+        except Exception as e:
+            logger.warning(f"Auto-offer tg error: {e}")
+        try:
+            await send_sbp_link(context, user_id)
+        except Exception as e:
+            logger.warning(f"Auto-offer sbp error: {e}")
 
     # Проверка лимитов
     scenario_cfg = SCENARIOS.get(state.get('scenario')) if state.get('scenario') else None
