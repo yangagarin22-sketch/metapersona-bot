@@ -717,15 +717,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     scenario_key = None
     if args:
         raw = args[0]
-        master, sep, maybe_scn = raw.partition('__')
+        master, sep, rest = raw.partition('__')
         if sep:
             if START_TOKEN and master != START_TOKEN and (user_id not in whitelist_ids):
                 await update.message.reply_text("Доступ только по прямой ссылке. Обратитесь к администратору.")
                 return
-            scenario_key = maybe_scn if maybe_scn in SCENARIOS else None
-            # parse utm from remainder
-            if len(args) > 1:
-                for token in args[1:]:
+            # rest может содержать: SCENARIO[__k=v__k=v]
+            parts = rest.split('__') if rest else []
+            if parts:
+                scn_candidate = parts[0]
+                if scn_candidate in SCENARIOS:
+                    scenario_key = scn_candidate
+                    kv_tokens = parts[1:]
+                else:
+                    kv_tokens = parts
+                for token in kv_tokens:
                     if '=' in token:
                         k, v = token.split('=', 1)
                         if k in utm:
