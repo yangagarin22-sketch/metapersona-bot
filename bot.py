@@ -105,16 +105,18 @@ if GOOGLE_CREDENTIALS_JSON:
         except Exception:
             users_sheet = ss.add_worksheet(title='Users', rows=1000, cols=20)
             users_sheet.append_row([
-                'user_id','username','interview_stage','interview_answers',
+                'user_id','interview_stage','interview_answers',
                 'daily_requests','last_date','custom_limit','is_active','created_at',
                 'scenario','free_used','utm_source','utm_medium','utm_campaign','utm_content','utm_term','ad_id'
             ])
         # Ensure Users header includes UTM columns (non-destructive append)
         try:
             u_headers = users_sheet.row_values(1)
+            needed_base = ['user_id','interview_stage','interview_answers','daily_requests','last_date','custom_limit','is_active','created_at']
             needed_extra = ['scenario','free_used','utm_source','utm_medium','utm_campaign','utm_content','utm_term','ad_id']
-            if any(col not in u_headers for col in needed_extra):
-                users_sheet.update('A1', [u_headers + [c for c in needed_extra if c not in u_headers]])
+            needed = needed_base + needed_extra
+            if u_headers != needed:
+                users_sheet.update('A1', [needed])
         except Exception:
             pass
         try:
@@ -692,7 +694,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     user_id = user.id
-    username = user.username or "Без username"
+    username = None
     # Блокируем ботов
     if getattr(update.effective_user, 'is_bot', False):
         return
@@ -826,7 +828,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'last_date': datetime.now(MSK_TZ).strftime('%Y-%m-%d'),
         'interview_answers': [],
         'conversation_history': [],
-        'username': username,
+        # username больше не собираем/не храним
         'custom_limit': 10,
         'scenario': scenario_key,
         'free_used': 0,
@@ -861,7 +863,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
             users_sheet.append_row([
-                user_id, username, 0, '', 0,
+                user_id, 0, '', 0,
                 datetime.now(MSK_TZ).strftime('%Y-%m-%d'), 10, True,
                 now_msk_str(),
                 scenario_key or '', 0,
@@ -876,7 +878,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await context.bot.send_message(
                 chat_id=ADMIN_CHAT_ID,
-                text=f"🆕 Новый пользователь ({scenario_key or 'default'}):\nID: {user_id}\nUsername: @{username}"
+                text=f"🆕 Новый пользователь ({scenario_key or 'default'}):\nID: {user_id}"
             )
         except Exception as e:
             logger.warning(f"Admin notify error: {e}")
@@ -964,6 +966,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Доступ ограничен.")
         return
     
+    # Если ждём транзитный e-mail для СБП — обрабатываем до логирования/истории, чтобы не писать ПД
+    if state.get('awaiting_receipt_contact'):
+        txt = (user_message or '').strip()
+        if txt.lower().startswith('email:'):
+            state['receipt_email'] = txt.split(':', 1)[1].strip()
+            state['awaiting_receipt_contact'] = False
+            await update.message.reply_text("Спасибо. Формирую ссылку СБП…")
+            await send_sbp_link(context, user_id)
+            return
+        else:
+            await update.message.reply_text("Укажи e-mail для чека в формате: email: ваш@почта.ру")
+            return
+
     # Сохраняем сообщение пользователя в историю
     state['conversation_history'].append({"role": "user", "content": user_message})
     if history_sheet:
@@ -988,30 +1003,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             persistence.save_user_state(user_id, state)
         except Exception as e:
             logger.warning(f"Persist save error: {e}")
-    # Если ждём контакт для чека (СБП): парсим email/phone
-    if state.get('awaiting_receipt_contact'):
-        txt = (user_message or '').strip()
-        if txt.lower().startswith('email:'):
-            state['receipt_email'] = txt.split(':', 1)[1].strip()
-            state['awaiting_receipt_contact'] = False
-            await update.message.reply_text("Спасибо. Формирую ссылку СБП…")
-            await send_sbp_link(context, user_id)
-            return
-        if txt.lower().startswith('phone:'):
-            state['receipt_phone'] = txt.split(':', 1)[1].strip()
-            state['awaiting_receipt_contact'] = False
-            await update.message.reply_text("Спасибо. Формирую ссылку СБП…")
-            await send_sbp_link(context, user_id)
-            return
+    # (Транзитный e-mail обрабатывается выше до логирования)
 
     # Эхо для админа (контроль)
     scenario_cfg = SCENARIOS.get(state.get('scenario')) if state.get('scenario') else None
     if (scenario_cfg and scenario_cfg.get('admin_echo')) or admin_settings['echo_user_messages']:
         try:
-            await context.bot.send_message(
-                chat_id=ADMIN_CHAT_ID,
-                text=f"📨 {user_id} (@{state.get('username')})\n{user_message}"
-            )
+            await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"📨 {user_id}\n{user_message}")
         except Exception as e:
             logger.warning(f"Admin echo error: {e}")
     
