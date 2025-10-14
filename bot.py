@@ -834,8 +834,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'scenario': scenario_key,
         'free_used': 0,
         'limit_notified': False,
-        'first_question_sent': False,
-        'first_question_pending': False,
+        'consent': False,
         'receipt_email': '',
         'receipt_phone': '',
         'awaiting_receipt_contact': False,
@@ -911,45 +910,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(welcome_text)
     user_states[user_id]['conversation_history'].append({"role": "assistant", "content": welcome_text})
-    # Планируем первый вопрос через короткую паузу, чтобы не перегружать старт
-    if scenario_cfg:
-        first_q = scenario_cfg['questions'][0]
-        user_states[user_id]['first_question_pending'] = True
-        async def _send_first_q_later():
-            try:
-                await asyncio.sleep(1.0)
-                st = user_states.get(user_id)
-                if not st:
-                    return
-                if st.get('first_question_sent'):
-                    return
-                # Не задаём, если уже начали интервью
-                if st.get('interview_stage', 0) > 0:
-                    return
-                await context.bot.send_message(chat_id=user_id, text=first_q)
-                st['first_question_sent'] = True
-                st['first_question_pending'] = False
-                st['conversation_history'].append({"role": "assistant", "content": first_q})
-                if history_sheet:
-                    try:
-                        history_sheet.append_row([
-                            user_id,
-                            st.get('scenario') or '',
-                            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                            'assistant',
-                            first_q,
-                            st.get('free_used', 0),
-                            st.get('daily_requests', 0),
-                            st.get('interview_stage', 0),
-                        ])
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-        try:
-            asyncio.create_task(_send_first_q_later())
-        except Exception:
-            pass
     # Funnel: clicked_start
     try:
         if funnel_sheet:
@@ -1148,7 +1108,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     logger.warning(f"History write error: {e}")
             return
         else:
-            await update.message.reply_text("Ответьте ""Да"" чтобы начать или вернитесь позже.")
+            # Мягко просим подтвердить готовность, без блокирующей формулировки
+            await update.message.reply_text("Ответьте ""Да"", чтобы начать.")
             return
 
     if state['interview_stage'] < len(questions):
