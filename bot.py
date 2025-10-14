@@ -72,6 +72,7 @@ from aiohttp import web
 users_sheet = None
 history_sheet = None
 states_sheet = None
+funnel_sheet = None
 if GOOGLE_CREDENTIALS_JSON:
     try:
         import gspread
@@ -91,8 +92,17 @@ if GOOGLE_CREDENTIALS_JSON:
             users_sheet = ss.add_worksheet(title='Users', rows=1000, cols=20)
             users_sheet.append_row([
                 'user_id','username','interview_stage','interview_answers',
-                'daily_requests','last_date','custom_limit','is_active','created_at'
+                'daily_requests','last_date','custom_limit','is_active','created_at',
+                'scenario','free_used','utm_source','utm_medium','utm_campaign','utm_content','utm_term','ad_id'
             ])
+        # Ensure Users header includes UTM columns (non-destructive append)
+        try:
+            u_headers = users_sheet.row_values(1)
+            needed_extra = ['scenario','free_used','utm_source','utm_medium','utm_campaign','utm_content','utm_term','ad_id']
+            if any(col not in u_headers for col in needed_extra):
+                users_sheet.update('A1', [u_headers + [c for c in needed_extra if c not in u_headers]])
+        except Exception:
+            pass
         try:
             history_sheet = ss.worksheet('History')
         except Exception:
@@ -103,6 +113,12 @@ if GOOGLE_CREDENTIALS_JSON:
         except Exception:
             states_sheet = ss.add_worksheet(title='States', rows=5000, cols=10)
             states_sheet.append_row(['user_id','state_json','updated_at','last_activity_at'])
+        # Funnel sheet
+        try:
+            funnel_sheet = ss.worksheet('Funnel')
+        except Exception:
+            funnel_sheet = ss.add_worksheet(title='Funnel', rows=5000, cols=12)
+            funnel_sheet.append_row(['timestamp','user_id','event','scenario','utm_source','utm_medium','utm_campaign','utm_content','utm_term','ad_id','extra'])
         # Ensure States header is correct (non-destructive)
         try:
             s_headers = states_sheet.row_values(1)
@@ -682,6 +698,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     # Гейтинг по токену/whitelist и сценарий
     args = context.args if hasattr(context, 'args') else []
+    # UTM parsing from deep-link
+    utm = {k: '' for k in ['utm_source','utm_medium','utm_campaign','utm_content','utm_term','ad_id']}
     scenario_key = None
     if args:
         raw = args[0]
@@ -691,6 +709,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("Доступ только по прямой ссылке. Обратитесь к администратору.")
                 return
             scenario_key = maybe_scn if maybe_scn in SCENARIOS else None
+            # parse utm from remainder
+            if len(args) > 1:
+                for token in args[1:]:
+                    if '=' in token:
+                        k, v = token.split('=', 1)
+                        if k in utm:
+                            utm[k] = v
         else:
             if START_TOKEN and raw != START_TOKEN and (user_id not in whitelist_ids):
                 await update.message.reply_text("Доступ только по прямой ссылке. Обратитесь к администратору.")
@@ -804,7 +829,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'scenario': scenario_key,
         'free_used': 0,
         'limit_notified': False,
-        'consent': False,
         'receipt_email': '',
         'receipt_phone': '',
         'awaiting_receipt_contact': False,
@@ -837,7 +861,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 user_id, username, 0, '', 0,
                 datetime.now().strftime('%Y-%m-%d'), 10, True,
                 datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                scenario_key or '', 0
+                scenario_key or '', 0,
+                utm['utm_source'], utm['utm_medium'], utm['utm_campaign'], utm['utm_content'], utm['utm_term'], utm['ad_id']
             ])
         except Exception as e:
             logger.warning(f"Users write error: {e}")
@@ -878,6 +903,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(welcome_text)
     user_states[user_id]['conversation_history'].append({"role": "assistant", "content": welcome_text})
+    # Funnel: clicked_start
+    try:
+        if funnel_sheet:
+            funnel_sheet.append_row([
+                datetime.now().strftime('%Y-%m-%d %H:%M:%S'), user_id, 'clicked_start',
+                scenario_key or '', utm['utm_source'], utm['utm_medium'], utm['utm_campaign'], utm['utm_content'], utm['utm_term'], utm['ad_id'], ''
+            ])
+    except Exception:
+        pass
     # Log assistant welcome into History
     if history_sheet:
         try:
@@ -978,7 +1012,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning(f"Admin echo error: {e}")
     
     # Если подписка истекла — уведомляем один раз и переводим в free-режим
-    if state.get('is_subscribed') and not is_subscription_active(state):
+        if state.get('is_subscribed') and not is_subscription_active(state):
         scenario_cfg_exp = SCENARIOS.get(state.get('scenario')) if state.get('scenario') else None
         if not state.get('subscription_end_notified'):
             end_msg = scenario_cfg_exp.get('subscription_end_message') if scenario_cfg_exp else None
@@ -999,6 +1033,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 persistence.save_user_state(user_id, state)
             except Exception as e:
                 logger.warning(f"Persist save error: {e}")
+            # Авто-оффер: сразу отправляем инвойс и СБП-ссылку
+            try:
+                if PAYMENT_PROVIDER_TOKEN:
+                    await send_invoice_to_user(context, user_id)
+            except Exception as e:
+                logger.warning(f"Auto-offer tg error: {e}")
+            try:
+                await send_sbp_link(context, user_id)
+            except Exception as e:
+                logger.warning(f"Auto-offer sbp error: {e}")
 
     # Проверка лимитов
     scenario_cfg = SCENARIOS.get(state.get('scenario')) if state.get('scenario') else None
