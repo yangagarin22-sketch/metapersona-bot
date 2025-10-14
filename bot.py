@@ -234,18 +234,6 @@ async def send_sbp_link(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
                 "scenario": user_states.get(chat_id, {}).get('scenario', 'Vlasta'),
                 "cms_name": "metapersona_bot",
                 "telegram_bot_name": "https://t.me/MetaPersonaBot"
-            },
-            # Чек без customer: ЮKassa соберёт контакт на своей странице
-            "receipt": {
-                "items": [{
-                    "description": "Доступ к Vlasta на 7 дней",
-                    "quantity": "1.0",
-                    "amount": {"value": f"{VLASTA_PRICE_RUB:.2f}", "currency": "RUB"},
-                    "vat_code": VAT_CODE,
-                    "payment_mode": "full_payment",
-                    "payment_subject": "service"
-                }],
-                "tax_system_code": TAX_SYSTEM_CODE
             }
         }
         # Форсируем СБП как единственный метод
