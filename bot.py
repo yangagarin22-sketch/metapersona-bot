@@ -58,6 +58,9 @@ try:
 except Exception as e:
     logger.warning(f"YooKassa SDK not configured: {e}")
 
+# VK Pixel for /pay/return page
+VK_PIXEL_ID = os.environ.get('VK_PIXEL_ID', '3708556')
+
 if not BOT_TOKEN or not DEEPSEEK_API_KEY:
     print("❌ ОШИБКА: Не установлены токены!")
     sys.exit(1)
@@ -774,12 +777,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         logger.warning(f"Persist save error: {e}")
                 return
 
-        # Иначе продолжаем с текущей точки
+        # Иначе продолжаем с текущей точки (мгновенный старт уже выдал первый вопрос)
         questions = get_interview_questions(existing_state)
-        # Vlasta: не задаём первый вопрос, пока нет явного согласия "Да"
-        if existing_state.get('scenario') == 'Vlasta' and not existing_state.get('consent'):
-            await update.message.reply_text("Ответьте ""Да"" чтобы начать.")
-            return
         if existing_state.get('interview_stage', 0) < len(questions):
             next_q = questions[existing_state['interview_stage']]
             await update.message.reply_text(next_q)
@@ -879,12 +878,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning(f"Admin notify error: {e}")
     
     if scenario_cfg:
-        # Vlasta: сначала спросить согласие Да/Нет, без немедленного первого вопроса
-        if scenario_key == 'Vlasta':
-            welcome_text = scenario_cfg['greeting']
-        else:
-            first_q = scenario_cfg['questions'][0]
-            welcome_text = scenario_cfg['greeting'] + "\n\n" + first_q
+        # Мгновенный старт: сразу приветствие и первый вопрос
+        first_q = scenario_cfg['questions'][0]
+        welcome_text = scenario_cfg['greeting'] + "\n\n" + first_q
     else:
         welcome_text = (
             "Привет.\n"
@@ -1714,7 +1710,31 @@ def main():
                 return web.Response(status=500, text='error')
 
         async def handle_yk_return(request: web.Request):
-            return web.Response(text='Спасибо! Если оплата прошла, доступ уже активирован в чате.')
+            html = f"""
+<!DOCTYPE html>
+<html lang="ru"><head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Оплата завершена</title>
+<!-- VK Pixel -->
+<script>
+!function(){var t=document.createElement("script");t.type="text/javascript",t.async=!0,t.src="https://vk.com/js/api/openapi.js?168";var e=document.getElementsByTagName("script")[0];e.parentNode.insertBefore(t,e)}();
+</script>
+<script>
+window.addEventListener('load', function(){
+  if (typeof VK !== 'undefined' && VK.Retargeting) {
+    try { VK.Retargeting.Init('{VK_PIXEL_ID}'); VK.Retargeting.Hit(); } catch(e) {}
+  }
+});
+</script>
+</head>
+<body style="font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica Neue, Arial; margin:40px;">
+  <h2>Спасибо!</h2>
+  <p>Если оплата прошла, доступ уже активирован в чате Telegram.</p>
+  <p>Можно закрыть эту страницу.</p>
+</body></html>
+"""
+            return web.Response(text=html, content_type='text/html')
 
         aio.router.add_post('/yookassa/webhook', handle_yk_webhook)
         aio.router.add_get('/pay/return', handle_yk_return)
