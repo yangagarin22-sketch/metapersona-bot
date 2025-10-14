@@ -966,6 +966,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Доступ ограничен.")
         return
     
+    # Если ждём транзитный e-mail для СБП — обрабатываем до логирования/истории, чтобы не писать ПД
+    if state.get('awaiting_receipt_contact'):
+        txt = (user_message or '').strip()
+        if txt.lower().startswith('email:'):
+            state['receipt_email'] = txt.split(':', 1)[1].strip()
+            state['awaiting_receipt_contact'] = False
+            await update.message.reply_text("Спасибо. Формирую ссылку СБП…")
+            await send_sbp_link(context, user_id)
+            return
+        else:
+            await update.message.reply_text("Укажи e-mail для чека в формате: email: ваш@почта.ру")
+            return
+
     # Сохраняем сообщение пользователя в историю
     state['conversation_history'].append({"role": "user", "content": user_message})
     if history_sheet:
@@ -990,21 +1003,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             persistence.save_user_state(user_id, state)
         except Exception as e:
             logger.warning(f"Persist save error: {e}")
-    # Если ждём контакт для чека (СБП): парсим email/phone
-    if state.get('awaiting_receipt_contact'):
-        txt = (user_message or '').strip()
-        if txt.lower().startswith('email:'):
-            state['receipt_email'] = txt.split(':', 1)[1].strip()
-            state['awaiting_receipt_contact'] = False
-            await update.message.reply_text("Спасибо. Формирую ссылку СБП…")
-            await send_sbp_link(context, user_id)
-            return
-        if txt.lower().startswith('phone:'):
-            state['receipt_phone'] = txt.split(':', 1)[1].strip()
-            state['awaiting_receipt_contact'] = False
-            await update.message.reply_text("Спасибо. Формирую ссылку СБП…")
-            await send_sbp_link(context, user_id)
-            return
+    # (Транзитный e-mail обрабатывается выше до логирования)
 
     # Эхо для админа (контроль)
     scenario_cfg = SCENARIOS.get(state.get('scenario')) if state.get('scenario') else None
