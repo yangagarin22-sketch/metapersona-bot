@@ -230,6 +230,20 @@ async def send_sbp_link(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
                 "metadata": {
                     "telegram_user_id": str(chat_id),
                     "scenario": user_states.get(chat_id, {}).get('scenario', 'Vlasta')
+                },
+                # Добавляем данные для формирования фискального чека (54‑ФЗ)
+                "receipt": {
+                    "items": [
+                        {
+                            "description": "Доступ к Vlasta на 7 дней",
+                            "quantity": "1.0",
+                            "amount": {"value": f"{VLASTA_PRICE_RUB:.2f}", "currency": "RUB"},
+                            "vat_code": VAT_CODE,
+                            "payment_mode": "full_payment",
+                            "payment_subject": "service"
+                        }
+                    ],
+                    "tax_system_code": TAX_SYSTEM_CODE
                 }
             },
             "cart": [
