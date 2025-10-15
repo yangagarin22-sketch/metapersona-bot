@@ -5,6 +5,7 @@ import asyncio
 import aiohttp
 import json
 import time
+import uuid
 import signal
 from datetime import datetime, timedelta, timezone
 from telegram import Update, LabeledPrice, InlineKeyboardMarkup, InlineKeyboardButton
@@ -212,76 +213,64 @@ async def send_invoice_to_user(context: ContextTypes.DEFAULT_TYPE, user_id: int)
     )
 
 async def send_sbp_link(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
-    if not (YOOKASSA_ACCOUNT_ID and YOOKASSA_SECRET_KEY and YOOKASSA_RETURN_URL):
+    if not (YOOKASSA_ACCOUNT_ID and YOOKASSA_SECRET_KEY):
         return
     try:
         try:
-            from yookassa import Payment as YKPayment  # lazy import
+            from yookassa.invoice import Invoice as YKInvoice  # lazy import
         except Exception:
             return
-        st = user_states.get(chat_id) or {}
-        # Требование ЮKassa: для redirect (СБП) нужен email в receipt.customer
-        if not st.get('receipt_email'):
-            # Запросить e-mail транзитом и выйти, не создавая платёж
-            st['awaiting_receipt_contact'] = True
-            await context.bot.send_message(chat_id=chat_id, text="Укажи e-mail для чека в формате: email: ваш@почта.ру")
-            return
-
+        # Создаём счёт (Invoice) без сбора персональных данных, передаём telegram_user_id в metadata
+        expires_at = (datetime.utcnow() + timedelta(hours=24)).strftime('%Y-%m-%dT%H:%M:%S.000Z')
         payload = {
-            "amount": {"value": f"{VLASTA_PRICE_RUB:.2f}", "currency": "RUB"},
-            "confirmation": {"type": "redirect", "return_url": YOOKASSA_RETURN_URL, "locale": "ru_RU"},
-            "capture": True,
-            "description": "Vlasta — доступ на 7 дней",
+            "payment_data": {
+                "amount": {"value": f"{VLASTA_PRICE_RUB:.2f}", "currency": "RUB"},
+                "capture": True,
+                "description": "Vlasta — доступ на 7 дней",
+                "metadata": {
+                    "telegram_user_id": str(chat_id),
+                    "scenario": user_states.get(chat_id, {}).get('scenario', 'Vlasta')
+                }
+            },
+            "cart": [
+                {
+                    "description": "Доступ к Vlasta на 7 дней",
+                    "price": {"value": f"{VLASTA_PRICE_RUB:.2f}", "currency": "RUB"},
+                    "quantity": 1.000
+                }
+            ],
+            "delivery_method_data": {"type": "self"},
+            "locale": "ru_RU",
+            "expires_at": expires_at,
+            "description": "Счёт на 7‑дневный доступ Vlasta",
             "metadata": {
                 "telegram_user_id": str(chat_id),
-                "scenario": user_states.get(chat_id, {}).get('scenario', 'Vlasta'),
-                "cms_name": "metapersona_bot",
-                "telegram_bot_name": "https://t.me/MetaPersonaBot"
+                "scenario": user_states.get(chat_id, {}).get('scenario', 'Vlasta')
             }
         }
-        # Добавляем receipt с customer.email и позициями
-        payload["receipt"] = {
-            "customer": {"email": st.get('receipt_email')},
-            "items": [{
-                "description": "Доступ к Vlasta на 7 дней",
-                "quantity": "1.0",
-                "amount": {"value": f"{VLASTA_PRICE_RUB:.2f}", "currency": "RUB"},
-                "vat_code": VAT_CODE,
-                "payment_mode": "full_payment",
-                "payment_subject": "service"
-            }],
-            "tax_system_code": TAX_SYSTEM_CODE
-        }
-        # Форсируем СБП как единственный метод
-        payload["payment_method_data"] = {"type": "sbp"}
-        logger.info(f"YK SBP create payload: user={chat_id} amount={VLASTA_PRICE_RUB} ts={int(time.time())}")
-        payment = YKPayment.create(payload)
-        conf = payment.confirmation
-        url = getattr(conf, 'confirmation_url', None)
-        pid = getattr(payment, 'id', None)
-        logger.info(f"YK SBP created: id={pid} url={url}")
+        idem = str(uuid.uuid4())
+        inv = YKInvoice.create(payload, idem)
+        url = None
+        try:
+            if inv and getattr(inv, 'delivery_method', None):
+                url = getattr(inv.delivery_method, 'url', None)
+        except Exception:
+            url = None
+        inv_id = getattr(inv, 'id', '-')
+        logger.info(f"YooKassa Invoice created: id={inv_id} url={url}")
         if url:
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton(text="Оплатить через ЮKassa (СБП)", url=url)]])
-            await context.bot.send_message(chat_id=chat_id, text=f"Оплатите через ЮKassa (СБП):\n{url}", reply_markup=kb)
-            # Очистим транзитный e-mail
-            try:
-                st['receipt_email'] = ''
-                st['awaiting_receipt_contact'] = False
-            except Exception:
-                pass
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton(text="Оплатить по СБП", url=url)]])
+            await context.bot.send_message(chat_id=chat_id, text="Сформирован персональный счёт. Нажми кнопку, чтобы оплатить по СБП:", reply_markup=kb)
         else:
-            # Без customer ЮKassa может не отдать ссылку при включённой фискализации
-            await context.bot.send_message(chat_id=chat_id, text=(
-                "Ссылка СБП временно недоступна. Оплатите в Telegram (картой/ЮMoney/SberPay) или повторите попытку позже."
-            ))
+            await context.bot.send_message(chat_id=chat_id, text="Ссылка на счёт временно недоступна. Попробуйте позже или оплатите через Telegram-инвойс /buy")
             try:
-                await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"YK SBP: нет confirmation_url (payment_id={pid})")
+                await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"Invoice: нет url (invoice_id={inv_id})")
             except Exception:
                 pass
     except Exception as e:
-        logger.warning(f"YK SBP error: {e}")
+        logger.warning(f"YooKassa Invoice error: {e}")
         try:
-            await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"YK SBP error: {e}")
+            await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"YooKassa Invoice error: {e}")
         except Exception:
             pass
         return
