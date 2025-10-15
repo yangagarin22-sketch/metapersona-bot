@@ -257,6 +257,11 @@ async def send_sbp_link(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
         except Exception:
             url = None
         inv_id = getattr(inv, 'id', '-')
+        try:
+            st = user_states.setdefault(chat_id, {})
+            st['last_invoice_id'] = inv_id
+        except Exception:
+            pass
         logger.info(f"YooKassa Invoice created: id={inv_id} url={url}")
         if url:
             kb = InlineKeyboardMarkup([[InlineKeyboardButton(text="Оплатить по СБП", url=url)]])
@@ -850,6 +855,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'is_subscribed': False,
         'subscription_until': '',
         'last_payment_id': '',
+        'last_invoice_id': '',
     }
     # Persist initial state
     if persistence:
@@ -1557,6 +1563,26 @@ def main():
         application.add_handler(CommandHandler("buy", send_invoice))
         application.add_handler(PreCheckoutQueryHandler(precheckout_callback))
         application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
+
+        # Admin: check last invoice status (diagnostics)
+        async def check_invoice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            if update.effective_user.id != ADMIN_CHAT_ID:
+                return
+            uid = update.effective_user.id
+            st = user_states.get(uid)
+            if not st or not st.get('last_invoice_id'):
+                await update.message.reply_text("Нет последнего invoice_id")
+                return
+            try:
+                from yookassa.invoice import Invoice as YKInvoice
+                inv = YKInvoice.find_one(st['last_invoice_id'])
+                status = getattr(inv, 'status', '-')
+                pay_id = getattr(getattr(inv, 'payment_details', None), 'id', '-') if hasattr(inv, 'payment_details') else '-'
+                await update.message.reply_text(f"invoice_id: {st['last_invoice_id']}\nstatus: {status}\npayment_id: {pay_id}")
+            except Exception as e:
+                await update.message.reply_text(f"check_invoice error: {e}")
+
+        application.add_handler(CommandHandler("check_invoice", check_invoice))
 
         # Callback for external YooKassa Smart Payment (create redirect payment)
         async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
