@@ -14,6 +14,13 @@ import telegram.ext as tg_ext
 from telegram.ext import Application, CommandHandler, MessageHandler, PreCheckoutQueryHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.constants import ParseMode
 
+# Optional .env support for local/dev environments
+try:
+    from dotenv import load_dotenv  # type: ignore
+    load_dotenv()
+except Exception:
+    pass
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s | %(levelname)s | %(name)s | %(message)s'
@@ -43,6 +50,13 @@ logger.info(f"ADMIN_CHAT_ID: {ADMIN_CHAT_ID} | GOOGLE_CREDENTIALS: {'✅' if GOO
 MSK_TZ = timezone(timedelta(hours=3))
 def now_msk_str():
     return datetime.now(MSK_TZ).strftime('%Y-%m-%d %H:%M:%S')
+
+def parse_msk_dt(dt_str: str):
+    try:
+        dt_naive = datetime.strptime(dt_str, '%Y-%m-%d %H:%M:%S')
+        return dt_naive.replace(tzinfo=MSK_TZ)
+    except Exception:
+        return None
 
 # Payments (Telegram + YooKassa)
 PAYMENT_PROVIDER_TOKEN = os.environ.get('PAYMENT_PROVIDER_TOKEN')
@@ -168,8 +182,10 @@ def is_subscription_active(state: dict) -> bool:
         until = state.get('subscription_until')
         if not until:
             return False
-        dt = datetime.strptime(until, '%Y-%m-%d %H:%M:%S')
-        return datetime.now() <= dt
+        dt = parse_msk_dt(until)
+        if not dt:
+            return False
+        return datetime.now(MSK_TZ) <= dt
     except Exception:
         return False
 
@@ -348,8 +364,10 @@ class SheetsPersistence:
             return
         now = datetime.now(MSK_TZ)
         now_ts = now.strftime('%Y-%m-%d %H:%M:%S')
-        last = self.last_saved_at.get(user_id, 0)
-        if not force and (asyncio.get_event_loop().time() - last) < self.debounce_secs:
+        # use monotonic time for debounce accounting
+        import time as _time
+        last = self.last_saved_at.get(user_id, 0.0)
+        if not force and (_time.monotonic() - last) < self.debounce_secs:
             return
         try:
             state_copy = dict(state)
@@ -369,7 +387,7 @@ class SheetsPersistence:
                 self.sheet.append_row([user_id, state_json, now_ts, now_ts])
                 # refresh cache entry (new row is at bottom)
                 self._ensure_cache()
-            self.last_saved_at[user_id] = asyncio.get_event_loop().time()
+            self.last_saved_at[user_id] = _time.monotonic()
         except Exception as e:
             logger.warning(f"States save error: {e}")
 
@@ -390,7 +408,9 @@ class SheetsPersistence:
                 if not last_at:
                     continue
                 try:
-                    dt = datetime.strptime(last_at, '%Y-%m-%d %H:%M:%S')
+                    dt = parse_msk_dt(last_at)
+                    if not dt:
+                        continue
                     if (datetime.now(MSK_TZ) - dt).days > days:
                         self.sheet.delete_rows(idx+1)  # +1 for header row offset
                         removed += 1
@@ -1663,8 +1683,8 @@ def main():
                     ok = True
                     if last_at:
                         try:
-                            dt = datetime.strptime(last_at, '%Y-%m-%d %H:%M:%S')
-                            ok = (datetime.now(MSK_TZ) - dt).days <= 14
+                            dt = parse_msk_dt(last_at)
+                            ok = (datetime.now(MSK_TZ) - dt).days <= 14 if dt else True
                         except Exception:
                             ok = True
                     if ok:
