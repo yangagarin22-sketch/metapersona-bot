@@ -1749,6 +1749,11 @@ window.addEventListener('load', function(){
             html = html.replace('REPLACE_VK_PIXEL_ID', VK_PIXEL_ID)
             return web.Response(text=html, content_type='text/html')
 
+        # Define webhook paths
+        base_url = os.environ.get('WEBHOOK_BASE_URL') or os.environ.get('RENDER_EXTERNAL_URL') or ''
+        url_path = f"/webhook/{BOT_TOKEN}"
+        webhook_url = base_url.rstrip('/') + url_path if base_url else ''
+        
         aio.router.add_post('/yookassa/webhook', handle_yk_webhook)
         aio.router.add_get('/pay/return', handle_yk_return)
         aio.router.add_post(url_path, handle_tg)          # token path
