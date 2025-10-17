@@ -108,13 +108,14 @@ if GOOGLE_CREDENTIALS_JSON:
             users_sheet.append_row([
                 'user_id','interview_stage','interview_answers',
                 'daily_requests','last_date','custom_limit','is_active','created_at',
-                'scenario','free_used','utm_source','utm_medium','utm_campaign','utm_content','utm_term','ad_id'
+                'scenario','free_used','utm_source','utm_medium','utm_campaign','utm_content','utm_term','ad_id',
+                'is_subscribed','subscription_until','last_payment_id'
             ])
         # Ensure Users header includes UTM columns (non-destructive append)
         try:
             u_headers = users_sheet.row_values(1)
             needed_base = ['user_id','interview_stage','interview_answers','daily_requests','last_date','custom_limit','is_active','created_at']
-            needed_extra = ['scenario','free_used','utm_source','utm_medium','utm_campaign','utm_content','utm_term','ad_id']
+            needed_extra = ['scenario','free_used','utm_source','utm_medium','utm_campaign','utm_content','utm_term','ad_id','is_subscribed','subscription_until','last_payment_id']
             needed = needed_base + needed_extra
             if u_headers != needed:
                 users_sheet.update('A1', [needed])
@@ -430,6 +431,41 @@ def save_interview_answers_to_users(user_id: int, state: dict):
         # fail silent to not break dialog
         pass
 
+def update_user_subscription_in_sheet(user_id: int, state: dict):
+    """Обновляет данные подписки пользователя в таблице Users"""
+    if not users_sheet:
+        return
+    try:
+        headers = users_sheet.row_values(1)
+        if not headers:
+            return
+        
+        # Находим индексы колонок
+        try:
+            is_sub_col = headers.index('is_subscribed') + 1
+            until_col = headers.index('subscription_until') + 1
+            payment_col = headers.index('last_payment_id') + 1
+        except ValueError:
+            return
+        
+        # Находим строку пользователя
+        records = users_sheet.get_all_records()
+        row_idx = None
+        for idx, rec in enumerate(records, start=2):
+            if str(rec.get('user_id')) == str(user_id):
+                row_idx = idx
+                break
+        if not row_idx:
+            return
+        
+        # Обновляем данные
+        users_sheet.update_cell(row_idx, is_sub_col, state.get('is_subscribed', False))
+        users_sheet.update_cell(row_idx, until_col, state.get('subscription_until', ''))
+        users_sheet.update_cell(row_idx, payment_col, state.get('last_payment_id', ''))
+    except Exception:
+        # fail silent to not break dialog
+        pass
+
 # === HISTORY helpers ===
 def load_recent_conversation_from_history(user_id: int, limit: int = 10) -> list[dict]:
     if not history_sheet:
@@ -515,7 +551,7 @@ SCENARIOS = {
             "Если пользователь написал явно неразборчиво или просто набор символов для \"лишь бы заполнить\", намекни, что это \"абракадабра\" и пусть она постарается написать нормально.\n"
             "Старайся быть интересной и полезной. Рождай интерес и вовлеченность.\n"
             "Если видишь конкретный вопрос, постарайся ответить сперва на него.\n"
-            "Помни историю диалога до 20 вопросов-ответов.\n\n"
+            "Помни историю диалога до 20 вопросов-ответов (технически передается 20 последних сообщений).\n\n"
             "Структура диалога:\n"
             "Перед тобой бот отправил баннер и приветственное сообщение. Далее задал 6 вводных вопросов, получил ответы и записал в таблицу. Ты подключаешься после этого интервью. Цель: Дать максимальную ценность, проанализировав ответы, и мягко подвести к покупке недельной подписке.\n"
             "Вот вопросы которые были заданы в процессе вводного интервью для понимания их порядка (только для обучения ИИ, у бота есть эти вопросы и написаны отдельно):\n"
@@ -803,7 +839,7 @@ async def deepseek_request(user_message, user_history=None, user_data=None):
         
         # Добавляем историю если есть
         if user_history:
-            messages.extend(user_history[-10:])  # Последние 10 сообщений
+            messages.extend(user_history[-20:])  # Последние 20 сообщений
         
         messages.append({"role": "user", "content": user_message})
         
@@ -916,7 +952,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         history_sheet.append_row([
                             user_id,
                             scenario_key or '',
-                            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                            now_msk_str(),
                             'assistant',
                             welcome_text,
                             existing_state.get('free_used', 0),
@@ -1019,7 +1055,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 datetime.now(MSK_TZ).strftime('%Y-%m-%d'), 10, True,
                 now_msk_str(),
                 scenario_key or '', 0,
-                utm['utm_source'], utm['utm_medium'], utm['utm_campaign'], utm['utm_content'], utm['utm_term'], utm['ad_id']
+                utm['utm_source'], utm['utm_medium'], utm['utm_campaign'], utm['utm_content'], utm['utm_term'], utm['ad_id'],
+                False, '', ''  # is_subscribed, subscription_until, last_payment_id
             ])
         except Exception as e:
             logger.warning(f"Users write error: {e}")
@@ -1570,6 +1607,8 @@ def main():
                 user_states[user_id]['subscription_until'] = until
                 user_states[user_id]['limit_notified'] = False
                 user_states[user_id]['subscription_end_notified'] = False
+                # Обновляем данные в таблице
+                update_user_subscription_in_sheet(user_id, user_states[user_id])
                 user_states[user_id]['last_payment_id'] = payment.telegram_payment_charge_id
                 
                 # Persist
@@ -1735,6 +1774,8 @@ def main():
                             st['subscription_until'] = until
                             st['limit_notified'] = False
                             st['subscription_end_notified'] = False
+                            # Обновляем данные в таблице
+                            update_user_subscription_in_sheet(uid, st)
                             if persistence:
                                 try:
                                     st['last_activity_at'] = now_msk_str()
