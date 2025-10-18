@@ -936,8 +936,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 existing_state['limit_notified'] = False
                 scenario_cfg = SCENARIOS.get(scenario_key)
                 if scenario_cfg:
-                    first_q = scenario_cfg['questions'][0]
-                    welcome_text = scenario_cfg['greeting'] + "\n\n" + first_q
+                    welcome_text = scenario_cfg['greeting']
                 else:
                     welcome_text = (
                         "Привет.\n"
@@ -1081,9 +1080,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.warning(f"Banner send error: {e}")
         
-        # Приветствие + первый вопрос
-        first_q = scenario_cfg['questions'][0]
-        welcome_text = scenario_cfg['greeting'] + "\n\n" + first_q
+        # Приветствие (только greeting, без первого вопроса)
+        welcome_text = scenario_cfg['greeting']
         await update.message.reply_text(welcome_text)
         user_states[user_id]['conversation_history'].append({"role": "assistant", "content": welcome_text})
         
@@ -1092,7 +1090,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 history_sheet.append_row([
                     user_id,
                     scenario_key or '',
-                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                            now_msk_str(),
                     'assistant',
                     welcome_text,
                     user_states[user_id].get('free_used', 0),
@@ -1169,7 +1167,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             history_sheet.append_row([
                 user_id,
                 scenario,
-                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                            now_msk_str(),
                 'user',
                 user_message,
                 state.get('free_used', 0),
@@ -1233,7 +1231,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     history_sheet.append_row([
                         user_id,
                         state.get('scenario') or '',
-                        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                            now_msk_str(),
                         'assistant',
                         first_q,
                         state.get('free_used', 0),
@@ -1271,7 +1269,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     history_sheet.append_row([
                         user_id,
                         state.get('scenario') or '',
-                        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                            now_msk_str(),
                         'assistant',
                         next_q,
                         state.get('free_used', 0),
@@ -1289,7 +1287,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     history_sheet.append_row([
                         user_id,
                         state.get('scenario') or '',
-                        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                            now_msk_str(),
                         'assistant',
                         "Отлично! Теперь я готова ответить на твои вопросы. Что тебя интересует?",
                         state.get('free_used', 0),
@@ -1449,7 +1447,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             history_sheet.append_row([
                 user_id,
                 state.get('scenario') or '',
-                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                            now_msk_str(),
                 'assistant',
                 ai_response or "Ошибка",
                 state.get('free_used', 0),
